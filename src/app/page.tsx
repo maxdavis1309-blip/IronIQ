@@ -112,6 +112,7 @@ export default function Home() {
   const [syncStatus, setSyncStatus] = useState("Local only");
   const [cloudReady, setCloudReady] = useState(false);
   const [lastCloudSyncAt, setLastCloudSyncAt] = useState<string | null>(null);
+  const [backupStatus, setBackupStatus] = useState("");
   const [messages, setMessages] = useState<CoachMessage[]>([
     {
       id: "m_intro",
@@ -146,6 +147,7 @@ export default function Home() {
   const nextExercise = getNextExercise();
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const activeWorkoutStats = activeWorkout ? getWorkoutTotals(activeWorkout) : null;
+  const selectedLiftInsight = useMemo(() => getLiftInsight(selectedCatalogExercise, workouts), [selectedCatalogExercise, workouts]);
 
   const saveCloudState = useCallback(
     async (userIdToSave: string, stateToSave: CloudSyncState) => {
@@ -629,14 +631,7 @@ export default function Home() {
   }
 
   function exportBackup() {
-    const payload = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      workouts,
-      activeWorkout,
-      recoveryEntries,
-      profile: demoProfile,
-    };
+    const payload = buildBackupPayload(workouts, activeWorkout, recoveryEntries);
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -644,6 +639,30 @@ export default function Home() {
     anchor.download = `ironiq-backup-${new Date().toISOString().slice(0, 10)}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function copyBackup() {
+    const payload = buildBackupPayload(workouts, activeWorkout, recoveryEntries);
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setBackupStatus("Copied all IronIQ data");
+    } catch {
+      setBackupStatus("Copy failed. Use Export instead.");
+    }
+  }
+
+  async function copyLatestWorkout() {
+    const latest = workouts[0];
+    if (!latest) {
+      setBackupStatus("No finished workout to copy yet");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(formatWorkoutForSharing(latest));
+      setBackupStatus("Copied latest workout");
+    } catch {
+      setBackupStatus("Copy failed. Use Export instead.");
+    }
   }
 
   async function importBackup(file: File | undefined) {
@@ -811,6 +830,14 @@ export default function Home() {
               ) : (
                 <p className="mt-1 text-sm text-zinc-500">No history for this lift yet.</p>
               )}
+            </div>
+            <div className="mt-3 rounded-2xl border border-emerald-200/20 bg-emerald-200/[0.06] p-3">
+              <div className="grid grid-cols-3 gap-2">
+                <StatCard label="sessions" value={selectedLiftInsight.sessions} />
+                <StatCard label="best" value={selectedLiftInsight.bestSet} tone="gold" />
+                <StatCard label="last" value={selectedLiftInsight.lastSet} tone="mint" />
+              </div>
+              <p className="mt-3 text-sm text-emerald-100">{selectedLiftInsight.nextTarget}</p>
             </div>
 
             <div className="mt-3 space-y-2 rounded-2xl border border-white/10 bg-black/20 p-3">
@@ -1386,11 +1413,18 @@ export default function Home() {
               <button type="button" onClick={exportBackup} className="min-h-12 rounded-2xl bg-amber-200 px-4 font-semibold text-zinc-950">
                 Export
               </button>
+              <button type="button" onClick={copyBackup} className="min-h-12 rounded-2xl bg-emerald-200 px-4 font-semibold text-zinc-950">
+                Copy data
+              </button>
+              <button type="button" onClick={copyLatestWorkout} className="min-h-12 rounded-2xl border border-white/10 bg-white/[0.04] px-4 font-semibold text-zinc-300">
+                Copy latest
+              </button>
               <label className="flex min-h-12 cursor-pointer items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] px-4 font-semibold text-zinc-300">
                 Import
                 <input type="file" accept="application/json" className="hidden" onChange={(event) => importBackup(event.target.files?.[0])} />
               </label>
             </div>
+            {backupStatus && <div className="mt-2 rounded-2xl bg-white/[0.04] p-3 text-sm text-zinc-300">{backupStatus}</div>}
             <button type="button" onClick={clearAllData} className="mt-2 min-h-12 w-full rounded-2xl border border-rose-300/20 bg-rose-300/10 px-4 font-semibold text-rose-100">
               Clear local data
             </button>
@@ -1528,6 +1562,49 @@ function getWorkoutListTotals(workouts: WorkoutLog[]) {
     },
     { sets: 0, reps: 0, volume: 0 },
   );
+}
+
+function getLiftInsight(exerciseName: string, workouts: WorkoutLog[]) {
+  const history = getExerciseHistory(userId, exerciseName, workouts);
+  const sets = history.map(({ set }) => set).filter((set) => set.weight || set.reps);
+  const best = sets
+    .map((set) => ({ set, e1rm: estimatedOneRepMax(set.weight, set.reps) }))
+    .sort((a, b) => b.e1rm - a.e1rm)[0]?.set;
+  const last = history[0]?.set;
+  const sessions = new Set(history.map(({ workout }) => workout.id)).size;
+
+  return {
+    sessions,
+    bestSet: best ? `${best.weight ?? "BW"}x${best.reps ?? "?"}` : "-",
+    lastSet: last ? `${last.weight ?? "BW"}x${last.reps ?? "?"}` : "-",
+    nextTarget: suggestNextSet(userId, exerciseName, workouts),
+  };
+}
+
+function buildBackupPayload(workouts: WorkoutLog[], activeWorkout: WorkoutLog | null, recoveryEntries: RecoveryEntry[]) {
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    workouts,
+    activeWorkout,
+    recoveryEntries,
+    profile: demoProfile,
+  };
+}
+
+function formatWorkoutForSharing(workout: WorkoutLog) {
+  const lines = [
+    `${workout.workoutDate} - ${titleCase(workout.workoutType)}`,
+    workout.aiSummary,
+    "",
+    ...workout.exercises.flatMap((exercise) => [
+      exercise.exerciseName,
+      ...exercise.sets.map((set) => `- ${set.weight ?? "BW"} x ${set.reps ?? "?"}${set.notes ? ` (${set.notes})` : ""}`),
+      "",
+    ]),
+  ];
+
+  return lines.join("\n").trim();
 }
 
 function filterHistory(workouts: WorkoutLog[], search: string, typeFilter: HistoryTypeFilter) {
