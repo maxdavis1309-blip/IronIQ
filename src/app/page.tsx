@@ -261,7 +261,7 @@ export default function Home() {
     setSyncStatus("Sending login link...");
     const { error } = await supabase.auth.signInWithOtp({
       email: authEmail.trim(),
-      options: { emailRedirectTo: window.location.origin },
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
     });
     setSyncStatus(error ? error.message : "Check your email for the login link");
   }
