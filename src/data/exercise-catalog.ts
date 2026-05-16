@@ -1,5 +1,5 @@
 export const exerciseCatalog = {
-  Chest: ["Incline Bench Press", "Bench Press", "Flat Bench Hammer Chest Press", "Chest Fly", "Cable Fly", "Pushup"],
+  Chest: ["Incline Bench Press", "Incline Bench Press Machine", "Bench Press", "Flat Bench Hammer Chest Press", "Chest Fly", "Cable Fly", "Pushup"],
   Back: ["Lat Pulldown", "Row", "Cable Row", "Chest-Supported Row", "Rear Delt Fly", "Pullup"],
   Legs: ["Hamstring Curl", "Leg Press", "Leg Extension", "Calf Raise", "Squat", "Romanian Deadlift"],
   Shoulders: ["Shoulder Press", "Overhead Press", "Lateral Raise", "Rear Delt Fly", "Face Pull"],
@@ -16,6 +16,7 @@ export const splitCatalog = {
   Push: [
     "Shoulder Press",
     "Incline Bench Press",
+    "Incline Bench Press Machine",
     "Lateral Raise",
     "Flat Bench Hammer Chest Press",
     "Overhead Tricep Extension",
@@ -24,7 +25,7 @@ export const splitCatalog = {
   ],
   Pull: ["Lat Pulldown", "Row", "Incline Curl", "Rear Delt Fly", "EZ Bar Hammer Curl"],
   "Shoulders & Arms": ["Shoulder Press", "Incline Curl", "Overhead Tricep Extension", "Lateral Raise", "Hammer Curl", "Dips"],
-  "Chest & Back": ["Lat Pulldown", "Incline Bench Press", "Row", "Flat Bench Hammer Chest Press", "Rear Delt Fly", "Chest Fly"],
+  "Chest & Back": ["Lat Pulldown", "Incline Bench Press", "Incline Bench Press Machine", "Row", "Flat Bench Hammer Chest Press", "Rear Delt Fly", "Chest Fly"],
   Legs: ["Hamstring Curl", "Leg Press", "Leg Extension", "Calf Raise"],
   Custom: [],
 } as const;
