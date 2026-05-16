@@ -406,6 +406,13 @@ export default function Home() {
     setActiveWorkout(null);
   }
 
+  function deleteWorkout(workoutId: string) {
+    const target = workouts.find((workout) => workout.id === workoutId);
+    const label = target ? `${formatShortDate(target.workoutDate)} ${titleCase(target.workoutType)}` : "this workout";
+    if (!confirm(`Delete ${label}? This cannot be undone.`)) return;
+    setWorkouts((current) => current.filter((workout) => workout.id !== workoutId));
+  }
+
   function discardActiveWorkout() {
     setActiveWorkout(null);
   }
@@ -876,7 +883,7 @@ export default function Home() {
           {workouts
             .filter((workout) => `${workout.rawText} ${workout.aiSummary}`.toLowerCase().includes(search.toLowerCase()))
             .map((workout) => (
-              <WorkoutCard key={workout.id} workout={workout} />
+              <WorkoutCard key={workout.id} workout={workout} onDelete={deleteWorkout} />
             ))}
           {!workouts.length && <EmptyState title="History is empty" body="No fake workouts loaded. Once you log tomorrow, this becomes your feed." />}
         </div>

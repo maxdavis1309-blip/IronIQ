@@ -1,7 +1,16 @@
+import { Trash2 } from "lucide-react";
 import type { WorkoutLog } from "@/lib/types";
 import { formatLongDate, titleCase } from "@/lib/utils";
 
-export function WorkoutCard({ workout, compact = false }: { workout: WorkoutLog; compact?: boolean }) {
+export function WorkoutCard({
+  workout,
+  compact = false,
+  onDelete,
+}: {
+  workout: WorkoutLog;
+  compact?: boolean;
+  onDelete?: (workoutId: string) => void;
+}) {
   return (
     <article className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
       <div className="flex items-start justify-between gap-4">
@@ -9,9 +18,22 @@ export function WorkoutCard({ workout, compact = false }: { workout: WorkoutLog;
           <div className="text-base font-semibold text-zinc-50">{formatLongDate(workout.workoutDate)}</div>
           <p className="mt-1 text-sm text-zinc-400">{workout.aiSummary}</p>
         </div>
-        <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-xs font-semibold text-emerald-100">
-          {titleCase(workout.workoutType)}
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-xs font-semibold text-emerald-100">
+            {titleCase(workout.workoutType)}
+          </span>
+          {!compact && onDelete && (
+            <button
+              type="button"
+              onClick={() => onDelete(workout.id)}
+              className="grid min-h-9 min-w-9 place-items-center rounded-full border border-red-300/20 bg-red-300/10 text-red-100"
+              aria-label="Delete workout"
+              title="Delete workout"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {!compact && <p className="mt-3 rounded-2xl bg-black/30 p-3 text-sm text-zinc-300">{workout.rawText}</p>}
