@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Bot,
@@ -12,11 +12,13 @@ import {
   Settings,
   Sparkles,
   Target,
+  X,
 } from "lucide-react";
 import { exerciseCatalog, exerciseCategories, splitCatalog, splitDays, type ExerciseCategory, type SplitDay } from "@/data/exercise-catalog";
 import { demoProfile, demoWorkouts } from "@/data/seed";
 import { mockCoachResponse } from "@/lib/ai/coach";
 import { mockParseWorkout } from "@/lib/ai/mock-parser";
+import { loadCloudSyncState, saveCloudSyncState } from "@/lib/cloud-sync";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import {
   getExerciseHistory,
@@ -26,7 +28,7 @@ import {
   suggestTodaysWorkout,
   summarizeLast30Days,
 } from "@/lib/intelligence";
-import type { CoachMessage, ParseResult, ParsedExercise, WorkoutLog, WorkoutType } from "@/lib/types";
+import type { CloudSyncState, CoachMessage, ParseResult, ParsedExercise, RecoveryEntry, WorkoutLog, WorkoutType } from "@/lib/types";
 import type { User } from "@supabase/supabase-js";
 import { estimatedOneRepMax, formatShortDate, normalizeExerciseName, titleCase, uid } from "@/lib/utils";
 import { Section } from "@/components/ui/Section";
@@ -38,6 +40,7 @@ const WORKOUTS_STORAGE_KEY = "ironiq.workouts.v1";
 const ACTIVE_WORKOUT_STORAGE_KEY = "ironiq.activeWorkout.v1";
 const RECOVERY_STORAGE_KEY = "ironiq.recovery.v1";
 const chips = ["Chest", "Back", "Legs", "Push", "Pull", "Arms", "Shoulders", "Cardio", "Injury note", "Bodyweight"];
+const historyTypeFilters = ["all", "push", "pull", "legs", "chest", "back", "arms", "shoulders", "cardio", "recovery", "unknown"] as const;
 const tabs = [
   { id: "today", label: "Today", icon: Dumbbell },
   { id: "history", label: "History", icon: History },
@@ -47,19 +50,32 @@ const tabs = [
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
+type HistoryTypeFilter = (typeof historyTypeFilters)[number];
 type SetDraft = {
   weight: string;
   reps: string;
 };
-type RecoveryEntry = {
-  date: string;
-  bodyweight: string;
-  sleep: string;
-  energy: string;
-  shoulder: string;
-  painNotes: string;
+type WorkoutEditSetDraft = {
+  id: string;
+  weight: string;
+  reps: string;
+  notes: string;
 };
-
+type WorkoutEditExerciseDraft = {
+  exerciseName: string;
+  muscleGroup: string;
+  notes: string;
+  sets: WorkoutEditSetDraft[];
+};
+type WorkoutEditDraft = {
+  id: string;
+  workoutDate: string;
+  workoutType: WorkoutType;
+  aiSummary: string;
+  rawText: string;
+  tags: string;
+  exercises: WorkoutEditExerciseDraft[];
+};
 export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("today");
@@ -68,6 +84,10 @@ export default function Home() {
   const [activeWorkout, setActiveWorkout] = useState<WorkoutLog | null>(null);
   const [lastParse, setLastParse] = useState<ParseResult | null>(null);
   const [search, setSearch] = useState("");
+  const [historyTypeFilter, setHistoryTypeFilter] = useState<HistoryTypeFilter>("all");
+  const [editingWorkout, setEditingWorkout] = useState<WorkoutEditDraft | null>(null);
+  const [finishDraft, setFinishDraft] = useState<WorkoutEditDraft | null>(null);
+  const [finishError, setFinishError] = useState("");
   const [selectedExercise, setSelectedExercise] = useState("bench press");
   const [selectedSplitDay, setSelectedSplitDay] = useState<SplitDay>("Push");
   const [selectedCategory, setSelectedCategory] = useState<ExerciseCategory>("Chest");
@@ -91,6 +111,7 @@ export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [syncStatus, setSyncStatus] = useState("Local only");
   const [cloudReady, setCloudReady] = useState(false);
+  const [lastCloudSyncAt, setLastCloudSyncAt] = useState<string | null>(null);
   const [messages, setMessages] = useState<CoachMessage[]>([
     {
       id: "m_intro",
@@ -116,21 +137,65 @@ export default function Home() {
   const exerciseHistory = useMemo(() => getExerciseHistory(userId, selectedExercise, workouts), [selectedExercise, workouts]);
   const selectedLiftHistory = useMemo(() => getExerciseHistory(userId, selectedCatalogExercise, workouts), [selectedCatalogExercise, workouts]);
   const topSets = useMemo(() => getTopSets(workouts).slice(0, 5), [workouts]);
-  const plannedSets = useMemo(() => getPlannedSets(), [setDrafts, dropSetEnabled, dropSetWeight, dropSetReps]);
+  const filteredHistory = useMemo(() => filterHistory(workouts, search, historyTypeFilter), [historyTypeFilter, search, workouts]);
+  const historyTotals = useMemo(() => getWorkoutListTotals(filteredHistory), [filteredHistory]);
+  const plannedSets = useMemo(() => buildPlannedSets(setDrafts, dropSetEnabled, dropSetWeight, dropSetReps), [setDrafts, dropSetEnabled, dropSetWeight, dropSetReps]);
   const quickTotalReps = plannedSets.reduce((sum, set) => sum + set.reps, 0);
   const quickVolume = plannedSets.reduce((sum, set) => sum + set.weight * set.reps, 0);
   const activeExerciseOptions = selectedSplitDay === "Custom" ? exerciseCatalog[selectedCategory] : splitCatalog[selectedSplitDay];
   const nextExercise = getNextExercise();
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const activeWorkoutStats = activeWorkout ? getWorkoutTotals(activeWorkout) : null;
+
+  const saveCloudState = useCallback(
+    async (userIdToSave: string, stateToSave: CloudSyncState) => {
+      if (!supabase) return;
+      try {
+        const syncedAt = await saveCloudSyncState(supabase, userIdToSave, stateToSave);
+        setLastCloudSyncAt(syncedAt);
+        setSyncStatus("Synced");
+      } catch (error) {
+        setSyncStatus(error instanceof Error ? error.message : "Cloud sync failed");
+      }
+    },
+    [supabase],
+  );
+
+  const loadCloudState = useCallback(
+    async (userIdToLoad: string) => {
+      if (!supabase) return;
+      setSyncStatus("Loading cloud...");
+      try {
+        const cloud = await loadCloudSyncState(supabase, userIdToLoad);
+        if (cloud.state) {
+          setWorkouts(cloud.state.workouts);
+          setActiveWorkout(cloud.state.activeWorkout);
+          setRecoveryEntries(cloud.state.recoveryEntries);
+          setLastCloudSyncAt(cloud.updatedAt);
+        } else {
+          const localState = readLocalSyncState();
+          const syncedAt = await saveCloudSyncState(supabase, userIdToLoad, localState);
+          setLastCloudSyncAt(syncedAt);
+        }
+        setSyncStatus("Synced");
+        setCloudReady(true);
+      } catch (error) {
+        setSyncStatus(error instanceof Error ? error.message : "Cloud sync failed");
+      }
+    },
+    [supabase],
+  );
 
   useEffect(() => {
-    const savedWorkouts = readStoredWorkouts();
-    const savedActiveWorkout = readStoredActiveWorkout();
-    const savedRecovery = readStoredRecovery();
-    if (savedWorkouts) setWorkouts(savedWorkouts);
-    if (savedActiveWorkout) setActiveWorkout(savedActiveWorkout);
-    if (savedRecovery) setRecoveryEntries(savedRecovery);
-    setMounted(true);
+    window.queueMicrotask(() => {
+      const savedWorkouts = readStoredWorkouts();
+      const savedActiveWorkout = readStoredActiveWorkout();
+      const savedRecovery = readStoredRecovery();
+      if (savedWorkouts) setWorkouts(savedWorkouts);
+      if (savedActiveWorkout) setActiveWorkout(savedActiveWorkout);
+      if (savedRecovery) setRecoveryEntries(savedRecovery);
+      setMounted(true);
+    });
   }, []);
 
   useEffect(() => {
@@ -156,7 +221,7 @@ export default function Home() {
     });
 
     return () => listener.subscription.unsubscribe();
-  }, [mounted, supabase]);
+  }, [loadCloudState, mounted, supabase]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -179,12 +244,12 @@ export default function Home() {
 
   useEffect(() => {
     if (!mounted || !supabase || !user || !cloudReady) return;
-    setSyncStatus("Syncing...");
     const timeout = window.setTimeout(() => {
-      saveCloudState(user.id);
+      setSyncStatus("Syncing...");
+      saveCloudState(user.id, { workouts, activeWorkout, recoveryEntries });
     }, 450);
     return () => window.clearTimeout(timeout);
-  }, [activeWorkout, cloudReady, mounted, recoveryEntries, supabase, user, workouts]);
+  }, [activeWorkout, cloudReady, mounted, recoveryEntries, saveCloudState, supabase, user, workouts]);
 
   async function signInWithEmail() {
     if (!supabase || !authEmail.trim()) return;
@@ -201,46 +266,19 @@ export default function Home() {
     await supabase.auth.signOut();
     setUser(null);
     setCloudReady(false);
+    setLastCloudSyncAt(null);
     setSyncStatus("Local only");
   }
 
-  async function loadCloudState(userIdToLoad: string) {
-    if (!supabase) return;
-    setSyncStatus("Loading cloud...");
-    const { data, error } = await supabase
-      .from("app_sync_states")
-      .select("workouts, active_workout, recovery_entries")
-      .eq("user_id", userIdToLoad)
-      .maybeSingle();
-
-    if (error) {
-      setSyncStatus(error.message);
-      return;
-    }
-
-    if (data) {
-      setWorkouts(Array.isArray(data.workouts) ? (data.workouts as WorkoutLog[]) : []);
-      setActiveWorkout((data.active_workout as WorkoutLog | null) ?? null);
-      setRecoveryEntries(Array.isArray(data.recovery_entries) ? (data.recovery_entries as RecoveryEntry[]) : []);
-      setSyncStatus("Synced");
-    } else {
-      await saveCloudState(userIdToLoad);
-      setSyncStatus("Synced");
-    }
-
-    setCloudReady(true);
+  function pushCloudState() {
+    if (!user) return;
+    setSyncStatus("Syncing...");
+    saveCloudState(user.id, { workouts, activeWorkout, recoveryEntries });
   }
 
-  async function saveCloudState(userIdToSave: string) {
-    if (!supabase) return;
-    const { error } = await supabase.from("app_sync_states").upsert({
-      user_id: userIdToSave,
-      workouts,
-      active_workout: activeWorkout,
-      recovery_entries: recoveryEntries,
-      updated_at: new Date().toISOString(),
-    });
-    setSyncStatus(error ? error.message : "Synced");
+  function pullCloudState() {
+    if (!user) return;
+    loadCloudState(user.id);
   }
 
   function updateCategory(category: ExerciseCategory) {
@@ -290,28 +328,8 @@ export default function Home() {
     setSetDrafts((current) => (current.length === 1 ? current : current.filter((_, draftIndex) => draftIndex !== index)));
   }
 
-  function getPlannedSets() {
-    const baseSets = setDrafts
-      .map((draft) => ({
-        weight: Number(draft.weight),
-        reps: Number(draft.reps),
-        isDropSet: false,
-      }))
-      .filter((set) => Number.isFinite(set.weight) && Number.isFinite(set.reps) && set.weight >= 0 && set.reps > 0);
-
-    if (dropSetEnabled) {
-      const weight = Number(dropSetWeight);
-      const reps = Number(dropSetReps);
-      if (Number.isFinite(weight) && Number.isFinite(reps) && weight >= 0 && reps > 0) {
-        baseSets.push({ weight, reps, isDropSet: true });
-      }
-    }
-
-    return baseSets;
-  }
-
   function submitStructuredLift() {
-    const planned = getPlannedSets();
+    const planned = plannedSets;
     if (!selectedCatalogExercise || !planned.length) return;
 
     const normalized = normalizeExerciseName(selectedCatalogExercise);
@@ -375,6 +393,10 @@ export default function Home() {
   }
 
   function removeExerciseFromActiveWorkout(exerciseIndex: number) {
+    if (activeWorkout?.exercises.length === 1) {
+      setFinishDraft(null);
+      setFinishError("");
+    }
     setActiveWorkout((current) => {
       if (!current) return current;
       const exercises = current.exercises.filter((_, index) => index !== exerciseIndex);
@@ -384,6 +406,11 @@ export default function Home() {
   }
 
   function removeSetFromActiveWorkout(exerciseIndex: number, setId: string) {
+    const targetExercise = activeWorkout?.exercises[exerciseIndex];
+    if (activeWorkout?.exercises.length === 1 && targetExercise?.sets.length === 1) {
+      setFinishDraft(null);
+      setFinishError("");
+    }
     setActiveWorkout((current) => {
       if (!current) return current;
       const exercises = current.exercises
@@ -402,8 +429,89 @@ export default function Home() {
 
   function finishWorkout() {
     if (!activeWorkout) return;
-    setWorkouts((current) => [{ ...activeWorkout, updatedAt: new Date().toISOString() }, ...current]);
+    setFinishDraft(workoutToEditDraft(activeWorkout));
+    setFinishError("");
+  }
+
+  function updateFinishWorkout<Field extends keyof WorkoutEditDraft>(field: Field, value: WorkoutEditDraft[Field]) {
+    setFinishDraft((current) => (current ? { ...current, [field]: value } : current));
+    setFinishError("");
+  }
+
+  function updateFinishExercise(index: number, field: keyof WorkoutEditExerciseDraft, value: string) {
+    setFinishDraft((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        exercises: current.exercises.map((exercise, exerciseIndex) => (exerciseIndex === index ? { ...exercise, [field]: value } : exercise)),
+      };
+    });
+    setFinishError("");
+  }
+
+  function updateFinishSet(exerciseIndex: number, setIndex: number, field: keyof WorkoutEditSetDraft, value: string) {
+    setFinishDraft((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        exercises: current.exercises.map((exercise, currentExerciseIndex) => {
+          if (currentExerciseIndex !== exerciseIndex) return exercise;
+          return {
+            ...exercise,
+            sets: exercise.sets.map((set, currentSetIndex) => (currentSetIndex === setIndex ? { ...set, [field]: value } : set)),
+          };
+        }),
+      };
+    });
+    setFinishError("");
+  }
+
+  function removeFinishSet(exerciseIndex: number, setIndex: number) {
+    setFinishDraft((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        exercises: current.exercises
+          .map((exercise, currentExerciseIndex) =>
+            currentExerciseIndex === exerciseIndex
+              ? { ...exercise, sets: exercise.sets.filter((_, currentSetIndex) => currentSetIndex !== setIndex) }
+              : exercise,
+          )
+          .filter((exercise) => exercise.sets.length),
+      };
+    });
+    setFinishError("");
+  }
+
+  function addFinishSet(exerciseIndex: number) {
+    setFinishDraft((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        exercises: current.exercises.map((exercise, currentExerciseIndex) =>
+          currentExerciseIndex === exerciseIndex
+            ? {
+                ...exercise,
+                sets: [...exercise.sets, { id: uid("set"), weight: "", reps: "", notes: "" }],
+              }
+            : exercise,
+        ),
+      };
+    });
+    setFinishError("");
+  }
+
+  function saveFinishedWorkout() {
+    if (!activeWorkout || !finishDraft) return;
+    const finishedWorkout = editDraftToWorkout(finishDraft, activeWorkout);
+    if (!finishedWorkout.exercises.length) {
+      setFinishError("Add at least one valid set before saving this workout.");
+      return;
+    }
+    setWorkouts((current) => [{ ...finishedWorkout, updatedAt: new Date().toISOString() }, ...current]);
     setActiveWorkout(null);
+    setFinishDraft(null);
+    setFinishError("");
   }
 
   function deleteWorkout(workoutId: string) {
@@ -411,10 +519,90 @@ export default function Home() {
     const label = target ? `${formatShortDate(target.workoutDate)} ${titleCase(target.workoutType)}` : "this workout";
     if (!confirm(`Delete ${label}? This cannot be undone.`)) return;
     setWorkouts((current) => current.filter((workout) => workout.id !== workoutId));
+    if (editingWorkout?.id === workoutId) setEditingWorkout(null);
+  }
+
+  function startEditingWorkout(workoutId: string) {
+    const workout = workouts.find((item) => item.id === workoutId);
+    if (!workout) return;
+    setEditingWorkout(workoutToEditDraft(workout));
+  }
+
+  function updateEditingWorkout<Field extends keyof WorkoutEditDraft>(field: Field, value: WorkoutEditDraft[Field]) {
+    setEditingWorkout((current) => (current ? { ...current, [field]: value } : current));
+  }
+
+  function updateEditingExercise(index: number, field: keyof WorkoutEditExerciseDraft, value: string) {
+    setEditingWorkout((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        exercises: current.exercises.map((exercise, exerciseIndex) => (exerciseIndex === index ? { ...exercise, [field]: value } : exercise)),
+      };
+    });
+  }
+
+  function updateEditingSet(exerciseIndex: number, setIndex: number, field: keyof WorkoutEditSetDraft, value: string) {
+    setEditingWorkout((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        exercises: current.exercises.map((exercise, currentExerciseIndex) => {
+          if (currentExerciseIndex !== exerciseIndex) return exercise;
+          return {
+            ...exercise,
+            sets: exercise.sets.map((set, currentSetIndex) => (currentSetIndex === setIndex ? { ...set, [field]: value } : set)),
+          };
+        }),
+      };
+    });
+  }
+
+  function removeEditingSet(exerciseIndex: number, setIndex: number) {
+    setEditingWorkout((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        exercises: current.exercises
+          .map((exercise, currentExerciseIndex) =>
+            currentExerciseIndex === exerciseIndex
+              ? { ...exercise, sets: exercise.sets.filter((_, currentSetIndex) => currentSetIndex !== setIndex) }
+              : exercise,
+          )
+          .filter((exercise) => exercise.sets.length),
+      };
+    });
+  }
+
+  function addEditingSet(exerciseIndex: number) {
+    setEditingWorkout((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        exercises: current.exercises.map((exercise, currentExerciseIndex) =>
+          currentExerciseIndex === exerciseIndex
+            ? {
+                ...exercise,
+                sets: [...exercise.sets, { id: uid("set"), weight: "", reps: "", notes: "" }],
+              }
+            : exercise,
+        ),
+      };
+    });
+  }
+
+  function saveEditedWorkout() {
+    if (!editingWorkout) return;
+    setWorkouts((current) =>
+      current.map((workout) => (workout.id === editingWorkout.id ? editDraftToWorkout(editingWorkout, workout) : workout)),
+    );
+    setEditingWorkout(null);
   }
 
   function discardActiveWorkout() {
     setActiveWorkout(null);
+    setFinishDraft(null);
+    setFinishError("");
   }
 
   function clearAllData() {
@@ -741,6 +929,13 @@ export default function Home() {
 
           {activeWorkout && (
             <Section title="Current Workout" action={<span className="text-xs font-semibold text-amber-100">{activeWorkout.exercises.length} exercises</span>}>
+              {activeWorkoutStats && (
+                <div className="mb-3 grid grid-cols-3 gap-2">
+                  <StatCard label="sets" value={activeWorkoutStats.sets} />
+                  <StatCard label="reps" value={activeWorkoutStats.reps} tone="mint" />
+                  <StatCard label="volume" value={`${Math.round(activeWorkoutStats.volume).toLocaleString()} lb`} tone="gold" />
+                </div>
+              )}
               <div className="space-y-3">
                 {activeWorkout.exercises.map((exercise, exerciseIndex) => (
                   <div key={`${exercise.normalizedExerciseName}-${exerciseIndex}`} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
@@ -779,9 +974,30 @@ export default function Home() {
                   Discard
                 </button>
                 <button type="button" onClick={finishWorkout} className="min-h-12 rounded-2xl bg-emerald-200 px-4 font-semibold text-zinc-950">
-                  Finish Workout
+                  Review & Finish
                 </button>
               </div>
+              {finishDraft && (
+                <div className="mt-3">
+                  <WorkoutEditPanel
+                    draft={finishDraft}
+                    title="Finish workout"
+                    body="Review date, type, tags, and sets before this joins History."
+                    saveLabel="Save workout"
+                    error={finishError}
+                    onCancel={() => {
+                      setFinishDraft(null);
+                      setFinishError("");
+                    }}
+                    onSave={saveFinishedWorkout}
+                    onWorkoutChange={updateFinishWorkout}
+                    onExerciseChange={updateFinishExercise}
+                    onSetChange={updateFinishSet}
+                    onAddSet={addFinishSet}
+                    onRemoveSet={removeFinishSet}
+                  />
+                </div>
+              )}
             </Section>
           )}
 
@@ -879,13 +1095,56 @@ export default function Home() {
               placeholder="Search logs, lifts, notes"
               className="min-h-10 flex-1 bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600"
             />
+            {search && (
+              <button type="button" onClick={() => setSearch("")} className="grid min-h-9 min-w-9 place-items-center rounded-full bg-white/[0.04] text-zinc-400" aria-label="Clear search">
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
-          {workouts
-            .filter((workout) => `${workout.rawText} ${workout.aiSummary}`.toLowerCase().includes(search.toLowerCase()))
-            .map((workout) => (
-              <WorkoutCard key={workout.id} workout={workout} onDelete={deleteWorkout} />
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {historyTypeFilters.map((type) => {
+              const isActive = historyTypeFilter === type;
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => setHistoryTypeFilter(type)}
+                  className={`shrink-0 rounded-full border px-3 py-2 text-sm font-semibold ${
+                    isActive ? "border-emerald-200/40 bg-emerald-200/15 text-emerald-100" : "border-white/10 bg-white/[0.04] text-zinc-400"
+                  }`}
+                >
+                  {type === "all" ? "All" : titleCase(type)}
+                </button>
+              );
+            })}
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <StatCard label="shown" value={filteredHistory.length} />
+            <StatCard label="sets" value={historyTotals.sets} tone="mint" />
+            <StatCard label="volume" value={`${Math.round(historyTotals.volume / 1000)}k`} tone="gold" />
+          </div>
+          {editingWorkout && (
+            <WorkoutEditPanel
+              draft={editingWorkout}
+              onCancel={() => setEditingWorkout(null)}
+              onSave={saveEditedWorkout}
+              onWorkoutChange={updateEditingWorkout}
+              onExerciseChange={updateEditingExercise}
+              onSetChange={updateEditingSet}
+              onAddSet={addEditingSet}
+              onRemoveSet={removeEditingSet}
+            />
+          )}
+          {filteredHistory.map((workout) => (
+              <WorkoutCard key={workout.id} workout={workout} onEdit={startEditingWorkout} onDelete={deleteWorkout} />
             ))}
           {!workouts.length && <EmptyState title="History is empty" body="No fake workouts loaded. Once you log tomorrow, this becomes your feed." />}
+          {workouts.length > 0 && !filteredHistory.length && (
+            <EmptyState
+              title="No matching workouts"
+              body="Clear search or switch the type filter to bring more sessions back into view."
+            />
+          )}
         </div>
       )}
 
@@ -1077,6 +1336,7 @@ export default function Home() {
               <div className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Status</div>
               <div className="mt-1 text-sm font-semibold text-zinc-100">{supabase ? syncStatus : "Supabase not configured"}</div>
               {user?.email && <div className="mt-1 text-sm text-zinc-400">{user.email}</div>}
+              {lastCloudSyncAt && <div className="mt-1 text-xs text-zinc-500">Last cloud write {formatSyncTime(lastCloudSyncAt)}</div>}
             </div>
 
             {!supabase && (
@@ -1102,10 +1362,13 @@ export default function Home() {
 
             {supabase && user && (
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => saveCloudState(user.id)} className="min-h-12 rounded-2xl bg-emerald-200 px-4 font-semibold text-zinc-950">
-                  Sync now
+                <button type="button" onClick={pushCloudState} className="min-h-12 rounded-2xl bg-emerald-200 px-4 font-semibold text-zinc-950">
+                  Push now
                 </button>
-                <button type="button" onClick={signOut} className="min-h-12 rounded-2xl border border-white/10 bg-white/[0.04] px-4 font-semibold text-zinc-300">
+                <button type="button" onClick={pullCloudState} className="min-h-12 rounded-2xl border border-white/10 bg-white/[0.04] px-4 font-semibold text-zinc-300">
+                  Pull cloud
+                </button>
+                <button type="button" onClick={signOut} className="col-span-2 min-h-12 rounded-2xl border border-white/10 bg-white/[0.04] px-4 font-semibold text-zinc-300">
                   Sign out
                 </button>
               </div>
@@ -1214,6 +1477,167 @@ function formatSetList(exercise: ParsedExercise) {
     .join(", ");
 }
 
+function buildPlannedSets(setDrafts: SetDraft[], dropSetEnabled: boolean, dropSetWeight: string, dropSetReps: string) {
+  const baseSets = setDrafts
+    .map((draft) => ({
+      weight: Number(draft.weight),
+      reps: Number(draft.reps),
+      isDropSet: false,
+    }))
+    .filter((set) => Number.isFinite(set.weight) && Number.isFinite(set.reps) && set.weight >= 0 && set.reps > 0);
+
+  if (dropSetEnabled) {
+    const weight = Number(dropSetWeight);
+    const reps = Number(dropSetReps);
+    if (Number.isFinite(weight) && Number.isFinite(reps) && weight >= 0 && reps > 0) {
+      baseSets.push({ weight, reps, isDropSet: true });
+    }
+  }
+
+  return baseSets;
+}
+
+function getWorkoutTotals(workout: WorkoutLog) {
+  return workout.exercises.reduce(
+    (totals, exercise) => {
+      exercise.sets.forEach((set) => {
+        totals.sets += 1;
+        totals.reps += set.reps ?? 0;
+        totals.volume += (set.weight ?? 0) * (set.reps ?? 0);
+      });
+      return totals;
+    },
+    { sets: 0, reps: 0, volume: 0 },
+  );
+}
+
+function getWorkoutListTotals(workouts: WorkoutLog[]) {
+  return workouts.reduce(
+    (totals, workout) => {
+      const workoutTotals = getWorkoutTotals(workout);
+      return {
+        sets: totals.sets + workoutTotals.sets,
+        reps: totals.reps + workoutTotals.reps,
+        volume: totals.volume + workoutTotals.volume,
+      };
+    },
+    { sets: 0, reps: 0, volume: 0 },
+  );
+}
+
+function filterHistory(workouts: WorkoutLog[], search: string, typeFilter: HistoryTypeFilter) {
+  const query = normalizeExerciseName(search);
+  return workouts.filter((workout) => {
+    if (typeFilter !== "all" && workout.workoutType !== typeFilter) return false;
+    if (!query) return true;
+    return getWorkoutSearchText(workout).includes(query);
+  });
+}
+
+function getWorkoutSearchText(workout: WorkoutLog) {
+  return normalizeExerciseName(
+    [
+      workout.rawText,
+      workout.aiSummary,
+      workout.workoutType,
+      workout.tags.join(" "),
+      ...workout.exercises.flatMap((exercise) => [
+        exercise.exerciseName,
+        exercise.normalizedExerciseName,
+        exercise.muscleGroup ?? "",
+        exercise.notes ?? "",
+        ...exercise.sets.map((set) => `${set.weight ?? ""} ${set.reps ?? ""} ${set.notes ?? ""}`),
+      ]),
+    ].join(" "),
+  );
+}
+
+function readLocalSyncState(): CloudSyncState {
+  return {
+    workouts: readStoredWorkouts() ?? demoWorkouts,
+    activeWorkout: readStoredActiveWorkout(),
+    recoveryEntries: readStoredRecovery() ?? [],
+  };
+}
+
+function formatSyncTime(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function workoutToEditDraft(workout: WorkoutLog): WorkoutEditDraft {
+  return {
+    id: workout.id,
+    workoutDate: workout.workoutDate,
+    workoutType: workout.workoutType,
+    aiSummary: workout.aiSummary,
+    rawText: workout.rawText,
+    tags: workout.tags.join(", "),
+    exercises: workout.exercises.map((exercise) => ({
+      exerciseName: exercise.exerciseName,
+      muscleGroup: exercise.muscleGroup ?? "",
+      notes: exercise.notes ?? "",
+      sets: exercise.sets.map((set) => ({
+        id: set.id,
+        weight: set.weight?.toString() ?? "",
+        reps: set.reps?.toString() ?? "",
+        notes: set.notes ?? "",
+      })),
+    })),
+  };
+}
+
+function editDraftToWorkout(draft: WorkoutEditDraft, fallback: WorkoutLog): WorkoutLog {
+  const exercises = draft.exercises
+    .map((exercise) => {
+      const exerciseName = exercise.exerciseName.trim();
+      const normalizedExerciseName = normalizeExerciseName(exerciseName);
+      const sets = exercise.sets
+        .map((set, index) => {
+          const weight = set.weight.trim() === "" ? undefined : Number(set.weight);
+          const reps = set.reps.trim() === "" ? undefined : Number(set.reps);
+          return {
+            id: set.id,
+            exerciseName,
+            normalizedExerciseName,
+            setNumber: index + 1,
+            weight: Number.isFinite(weight) ? weight : undefined,
+            reps: Number.isFinite(reps) ? reps : undefined,
+            notes: set.notes.trim() || undefined,
+          };
+        })
+        .filter((set) => set.weight !== undefined || set.reps !== undefined || set.notes);
+
+      return {
+        exerciseName,
+        normalizedExerciseName,
+        muscleGroup: exercise.muscleGroup.trim() || undefined,
+        notes: exercise.notes.trim() || undefined,
+        sets,
+      };
+    })
+    .filter((exercise) => exercise.exerciseName && exercise.sets.length);
+  const rawText = draft.rawText.trim() || exercises.map((exercise) => `${exercise.exerciseName}: ${formatSetList(exercise)}`).join("\n");
+
+  return {
+    ...fallback,
+    workoutDate: draft.workoutDate || fallback.workoutDate,
+    workoutType: draft.workoutType,
+    aiSummary: draft.aiSummary.trim() || rawText,
+    rawText,
+    tags: draft.tags
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean),
+    exercises,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function readStoredWorkouts() {
   try {
     const saved = localStorage.getItem(WORKOUTS_STORAGE_KEY);
@@ -1244,6 +1668,158 @@ function readStoredRecovery() {
   } catch {
     return null;
   }
+}
+
+function WorkoutEditPanel({
+  draft,
+  title = "Edit workout",
+  body = "Fix date, notes, tags, or any set that was logged wrong.",
+  saveLabel = "Save",
+  error,
+  onCancel,
+  onSave,
+  onWorkoutChange,
+  onExerciseChange,
+  onSetChange,
+  onAddSet,
+  onRemoveSet,
+}: {
+  draft: WorkoutEditDraft;
+  title?: string;
+  body?: string;
+  saveLabel?: string;
+  error?: string;
+  onCancel: () => void;
+  onSave: () => void;
+  onWorkoutChange: <Field extends keyof WorkoutEditDraft>(field: Field, value: WorkoutEditDraft[Field]) => void;
+  onExerciseChange: (index: number, field: keyof WorkoutEditExerciseDraft, value: string) => void;
+  onSetChange: (exerciseIndex: number, setIndex: number, field: keyof WorkoutEditSetDraft, value: string) => void;
+  onAddSet: (exerciseIndex: number) => void;
+  onRemoveSet: (exerciseIndex: number, setIndex: number) => void;
+}) {
+  const workoutTypes: WorkoutType[] = ["push", "pull", "legs", "chest", "back", "arms", "shoulders", "cardio", "recovery", "unknown"];
+
+  return (
+    <section className="rounded-2xl border border-amber-200/20 bg-amber-200/[0.06] p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-amber-100">{title}</div>
+          <p className="mt-1 text-xs text-zinc-400">{body}</p>
+        </div>
+        <div className="flex gap-2">
+          <button type="button" onClick={onCancel} className="min-h-10 rounded-2xl border border-white/10 px-3 text-sm font-semibold text-zinc-300">
+            Cancel
+          </button>
+          <button type="button" onClick={onSave} className="min-h-10 rounded-2xl bg-emerald-200 px-3 text-sm font-semibold text-zinc-950">
+            {saveLabel}
+          </button>
+        </div>
+      </div>
+      {error && <div className="mt-3 rounded-2xl border border-red-300/20 bg-red-300/10 p-3 text-sm font-semibold text-red-100">{error}</div>}
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <input
+          type="date"
+          value={draft.workoutDate}
+          onChange={(event) => onWorkoutChange("workoutDate", event.target.value)}
+          className="min-h-12 rounded-2xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100"
+        />
+        <select
+          value={draft.workoutType}
+          onChange={(event) => onWorkoutChange("workoutType", event.target.value as WorkoutType)}
+          className="min-h-12 rounded-2xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100"
+        >
+          {workoutTypes.map((type) => (
+            <option key={type} value={type}>
+              {titleCase(type)}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <input
+        value={draft.aiSummary}
+        onChange={(event) => onWorkoutChange("aiSummary", event.target.value)}
+        placeholder="Summary"
+        className="mt-2 min-h-12 w-full rounded-2xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100 placeholder:text-zinc-600"
+      />
+      <textarea
+        value={draft.rawText}
+        onChange={(event) => onWorkoutChange("rawText", event.target.value)}
+        placeholder="Raw log"
+        className="mt-2 min-h-24 w-full rounded-2xl border border-white/10 bg-black/40 p-3 text-sm text-zinc-100 placeholder:text-zinc-600"
+      />
+      <input
+        value={draft.tags}
+        onChange={(event) => onWorkoutChange("tags", event.target.value)}
+        placeholder="Tags separated by commas"
+        className="mt-2 min-h-12 w-full rounded-2xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100 placeholder:text-zinc-600"
+      />
+
+      <div className="mt-4 space-y-3">
+        {draft.exercises.map((exercise, exerciseIndex) => (
+          <div key={`${draft.id}-${exerciseIndex}`} className="rounded-2xl border border-white/10 bg-black/30 p-3">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input
+                value={exercise.exerciseName}
+                onChange={(event) => onExerciseChange(exerciseIndex, "exerciseName", event.target.value)}
+                placeholder="Exercise"
+                className="min-h-11 rounded-2xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100 placeholder:text-zinc-600"
+              />
+              <input
+                value={exercise.muscleGroup}
+                onChange={(event) => onExerciseChange(exerciseIndex, "muscleGroup", event.target.value)}
+                placeholder="Muscle group"
+                className="min-h-11 rounded-2xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100 placeholder:text-zinc-600"
+              />
+            </div>
+            <input
+              value={exercise.notes}
+              onChange={(event) => onExerciseChange(exerciseIndex, "notes", event.target.value)}
+              placeholder="Exercise notes"
+              className="mt-2 min-h-11 w-full rounded-2xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100 placeholder:text-zinc-600"
+            />
+            <div className="mt-3 space-y-2">
+              {exercise.sets.map((set, setIndex) => (
+                <div key={set.id} className="grid grid-cols-[1fr_1fr_1.4fr_auto] gap-2">
+                  <input
+                    value={set.weight}
+                    onChange={(event) => onSetChange(exerciseIndex, setIndex, "weight", event.target.value)}
+                    placeholder="Weight"
+                    inputMode="decimal"
+                    className="min-h-10 rounded-xl border border-white/10 bg-zinc-950 px-2 text-sm text-zinc-100 placeholder:text-zinc-600"
+                  />
+                  <input
+                    value={set.reps}
+                    onChange={(event) => onSetChange(exerciseIndex, setIndex, "reps", event.target.value)}
+                    placeholder="Reps"
+                    inputMode="numeric"
+                    className="min-h-10 rounded-xl border border-white/10 bg-zinc-950 px-2 text-sm text-zinc-100 placeholder:text-zinc-600"
+                  />
+                  <input
+                    value={set.notes}
+                    onChange={(event) => onSetChange(exerciseIndex, setIndex, "notes", event.target.value)}
+                    placeholder="Notes"
+                    className="min-h-10 rounded-xl border border-white/10 bg-zinc-950 px-2 text-sm text-zinc-100 placeholder:text-zinc-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => onRemoveSet(exerciseIndex, setIndex)}
+                    className="min-h-10 rounded-xl border border-red-300/20 px-3 text-sm font-semibold text-red-100"
+                  >
+                    Del
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={() => onAddSet(exerciseIndex)} className="mt-3 min-h-10 rounded-2xl border border-white/10 px-3 text-sm font-semibold text-amber-100">
+              Add set
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function EmptyState({ title, body }: { title: string; body: string }) {

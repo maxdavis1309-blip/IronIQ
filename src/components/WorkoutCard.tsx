@@ -1,14 +1,16 @@
-import { Trash2 } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 import type { WorkoutLog } from "@/lib/types";
 import { formatLongDate, titleCase } from "@/lib/utils";
 
 export function WorkoutCard({
   workout,
   compact = false,
+  onEdit,
   onDelete,
 }: {
   workout: WorkoutLog;
   compact?: boolean;
+  onEdit?: (workoutId: string) => void;
   onDelete?: (workoutId: string) => void;
 }) {
   return (
@@ -22,6 +24,17 @@ export function WorkoutCard({
           <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-xs font-semibold text-emerald-100">
             {titleCase(workout.workoutType)}
           </span>
+          {!compact && onEdit && (
+            <button
+              type="button"
+              onClick={() => onEdit(workout.id)}
+              className="grid min-h-9 min-w-9 place-items-center rounded-full border border-amber-200/20 bg-amber-200/10 text-amber-100"
+              aria-label="Edit workout"
+              title="Edit workout"
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
+          )}
           {!compact && onDelete && (
             <button
               type="button"

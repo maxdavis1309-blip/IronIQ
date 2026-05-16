@@ -72,6 +72,21 @@ export type WorkoutLog = {
   updatedAt: string;
 };
 
+export type RecoveryEntry = {
+  date: string;
+  bodyweight: string;
+  sleep: string;
+  energy: string;
+  shoulder: string;
+  painNotes: string;
+};
+
+export type CloudSyncState = {
+  workouts: WorkoutLog[];
+  activeWorkout: WorkoutLog | null;
+  recoveryEntries: RecoveryEntry[];
+};
+
 export type UserProfile = {
   userId: string;
   displayName: string;
