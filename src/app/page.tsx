@@ -167,13 +167,18 @@ export default function Home() {
       setSyncStatus("Loading cloud...");
       try {
         const cloud = await loadCloudSyncState(supabase, userIdToLoad);
+        const localState = readLocalSyncState();
         if (cloud.state) {
-          setWorkouts(cloud.state.workouts);
-          setActiveWorkout(cloud.state.activeWorkout);
-          setRecoveryEntries(cloud.state.recoveryEntries);
+          const mergedState = mergeSyncStates(cloud.state, localState);
+          setWorkouts(mergedState.workouts);
+          setActiveWorkout(mergedState.activeWorkout);
+          setRecoveryEntries(mergedState.recoveryEntries);
           setLastCloudSyncAt(cloud.updatedAt);
+          if (mergedState.workouts.length !== cloud.state.workouts.length || mergedState.recoveryEntries.length !== cloud.state.recoveryEntries.length) {
+            const syncedAt = await saveCloudSyncState(supabase, userIdToLoad, mergedState);
+            setLastCloudSyncAt(syncedAt);
+          }
         } else {
-          const localState = readLocalSyncState();
           const syncedAt = await saveCloudSyncState(supabase, userIdToLoad, localState);
           setLastCloudSyncAt(syncedAt);
         }
@@ -1558,6 +1563,36 @@ function readLocalSyncState(): CloudSyncState {
     activeWorkout: readStoredActiveWorkout(),
     recoveryEntries: readStoredRecovery() ?? [],
   };
+}
+
+function mergeSyncStates(cloudState: CloudSyncState, localState: CloudSyncState): CloudSyncState {
+  return {
+    workouts: mergeWorkouts(cloudState.workouts, localState.workouts),
+    activeWorkout: cloudState.activeWorkout ?? localState.activeWorkout,
+    recoveryEntries: mergeRecoveryEntries(cloudState.recoveryEntries, localState.recoveryEntries),
+  };
+}
+
+function mergeWorkouts(cloudWorkouts: WorkoutLog[], localWorkouts: WorkoutLog[]) {
+  const workoutsById = new Map<string, WorkoutLog>();
+  [...cloudWorkouts, ...localWorkouts].forEach((workout) => {
+    const existing = workoutsById.get(workout.id);
+    if (!existing || new Date(workout.updatedAt).getTime() >= new Date(existing.updatedAt).getTime()) {
+      workoutsById.set(workout.id, workout);
+    }
+  });
+
+  return Array.from(workoutsById.values()).sort((a, b) => {
+    const dateSort = b.workoutDate.localeCompare(a.workoutDate);
+    if (dateSort) return dateSort;
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
+}
+
+function mergeRecoveryEntries(cloudEntries: RecoveryEntry[], localEntries: RecoveryEntry[]) {
+  const entriesByDate = new Map<string, RecoveryEntry>();
+  [...cloudEntries, ...localEntries].forEach((entry) => entriesByDate.set(entry.date, entry));
+  return Array.from(entriesByDate.values()).sort((a, b) => b.date.localeCompare(a.date));
 }
 
 function formatSyncTime(value: string) {
