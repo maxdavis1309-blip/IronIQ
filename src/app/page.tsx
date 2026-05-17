@@ -148,6 +148,7 @@ export default function Home() {
   const nextExercise = getNextExercise();
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const activeWorkoutStats = activeWorkout ? getWorkoutTotals(activeWorkout) : null;
+  const activeWorkoutInsight = activeWorkout ? getActiveWorkoutInsight(activeWorkout) : null;
   const selectedLiftInsight = useMemo(() => getLiftInsight(selectedCatalogExercise, workouts), [selectedCatalogExercise, workouts]);
 
   const saveCloudState = useCallback(
@@ -318,6 +319,45 @@ export default function Home() {
     setSelectedCatalogExercise(nextExercise);
   }
 
+  function startSelectedSplitWorkout() {
+    if (selectedSplitDay === "Custom") return;
+    const now = new Date().toISOString();
+    const workoutType = splitDayToWorkoutType(selectedSplitDay);
+    const plannedExercises = splitCatalog[selectedSplitDay].map((exerciseName) => createPlannedExercise(exerciseName));
+    const plannedNames = plannedExercises.map((exercise) => exercise.exerciseName).join(", ");
+
+    setActiveWorkout((current) => {
+      if (!current) {
+        return {
+          id: uid("workout"),
+          userId,
+          workoutDate: now.slice(0, 10),
+          rawText: `${selectedSplitDay} - planned: ${plannedNames}`,
+          workoutType,
+          aiSummary: `${selectedSplitDay} planned: ${plannedNames}.`,
+          parserConfidence: 1,
+          tags: [selectedSplitDay.toLowerCase(), workoutType],
+          exercises: plannedExercises,
+          createdAt: now,
+          updatedAt: now,
+        };
+      }
+
+      const existingNames = new Set(current.exercises.map((exercise) => exercise.normalizedExerciseName));
+      const missingExercises = plannedExercises.filter((exercise) => !existingNames.has(exercise.normalizedExerciseName));
+      if (!missingExercises.length) return current;
+
+      return {
+        ...current,
+        rawText: `${current.rawText}\nAdded ${selectedSplitDay} outline: ${missingExercises.map((exercise) => exercise.exerciseName).join(", ")}`,
+        aiSummary: `${current.aiSummary} Added ${selectedSplitDay} outline.`,
+        tags: Array.from(new Set([...current.tags, selectedSplitDay.toLowerCase(), workoutType])),
+        exercises: [...current.exercises, ...missingExercises],
+        updatedAt: now,
+      };
+    });
+  }
+
   function updateSetDraft(index: number, field: keyof SetDraft, value: string) {
     setSetDrafts((current) => current.map((draft, draftIndex) => (draftIndex === index ? { ...draft, [field]: value } : draft)));
   }
@@ -388,7 +428,7 @@ export default function Home() {
         rawText: `${current.rawText}\n${raw}`,
         aiSummary: `${current.aiSummary} ${exerciseSummary}`,
         tags: Array.from(new Set([...current.tags, ...nextTags])),
-        exercises: [...current.exercises, parsedExercise],
+        exercises: mergeExerciseIntoWorkout(current.exercises, parsedExercise),
         updatedAt: now,
       };
     });
@@ -790,6 +830,15 @@ export default function Home() {
                   </button>
                 ))}
               </div>
+              {selectedSplitDay !== "Custom" && (
+                <button
+                  type="button"
+                  onClick={startSelectedSplitWorkout}
+                  className="mt-3 min-h-12 w-full rounded-2xl border border-emerald-200/25 bg-emerald-200/10 px-4 font-semibold text-emerald-100"
+                >
+                  {activeWorkout ? `Add ${selectedSplitDay} outline` : `Start ${selectedSplitDay}`}
+                </button>
+              )}
             </div>
 
             <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Body part</div>
@@ -979,6 +1028,27 @@ export default function Home() {
                   <StatCard label="volume" value={`${Math.round(activeWorkoutStats.volume).toLocaleString()} lb`} tone="gold" />
                 </div>
               )}
+              {activeWorkoutInsight && (
+                <div className="mb-3 rounded-2xl border border-emerald-200/15 bg-emerald-200/[0.07] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-100">{workoutTypeLabel(activeWorkout.workoutType)}</div>
+                      <div className="mt-1 text-sm text-zinc-300">{activeWorkoutInsight.completedExercises}/{activeWorkoutInsight.totalExercises} lifts logged</div>
+                    </div>
+                    <div className="text-right text-xs text-zinc-500">{formatShortDate(activeWorkout.workoutDate)}</div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                    <div className="rounded-2xl bg-black/20 p-3">
+                      <div className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Top set</div>
+                      <div className="mt-1 font-semibold text-amber-100">{activeWorkoutInsight.topSet}</div>
+                    </div>
+                    <div className="rounded-2xl bg-black/20 p-3">
+                      <div className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Last lift</div>
+                      <div className="mt-1 font-semibold text-zinc-100">{activeWorkoutInsight.lastLift}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="space-y-3">
                 {activeWorkout.exercises.map((exercise, exerciseIndex) => (
                   <div key={`${exercise.normalizedExerciseName}-${exerciseIndex}`} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
@@ -996,18 +1066,22 @@ export default function Home() {
                       </button>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-1.5">
-                      {exercise.sets.map((set) => (
-                        <button
-                          key={set.id}
-                          type="button"
-                          onClick={() => removeSetFromActiveWorkout(exerciseIndex, set.id)}
-                          className="rounded-full bg-black/40 px-2.5 py-1 text-xs text-zinc-300"
-                          title="Tap to remove set"
-                        >
-                          {set.weight ?? "BW"} x {set.reps ?? "?"}
-                          {set.notes?.includes("drop set") ? " drop" : ""}
-                        </button>
-                      ))}
+                      {exercise.sets.length ? (
+                        exercise.sets.map((set) => (
+                          <button
+                            key={set.id}
+                            type="button"
+                            onClick={() => removeSetFromActiveWorkout(exerciseIndex, set.id)}
+                            className="rounded-full bg-black/40 px-2.5 py-1 text-xs text-zinc-300"
+                            title="Tap to remove set"
+                          >
+                            {set.weight ?? "BW"} x {set.reps ?? "?"}
+                            {set.notes?.includes("drop set") ? " drop" : ""}
+                          </button>
+                        ))
+                      ) : (
+                        <span className="rounded-full border border-dashed border-white/10 px-2.5 py-1 text-xs font-medium text-zinc-500">Planned</span>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1524,6 +1598,36 @@ function categoryForSplitDay(day: SplitDay): ExerciseCategory {
   return map[day];
 }
 
+function createPlannedExercise(exerciseName: string): ParsedExercise {
+  return {
+    exerciseName,
+    normalizedExerciseName: normalizeExerciseName(exerciseName),
+    muscleGroup: categoryForExercise(exerciseName).toLowerCase(),
+    sets: [],
+  };
+}
+
+function categoryForExercise(exerciseName: string): ExerciseCategory {
+  const normalized = normalizeExerciseName(exerciseName);
+  return exerciseCategories.find((category) => exerciseCatalog[category].some((name) => normalizeExerciseName(name) === normalized)) ?? "Chest";
+}
+
+function mergeExerciseIntoWorkout(exercises: ParsedExercise[], nextExercise: ParsedExercise) {
+  const existingIndex = exercises.findIndex((exercise) => exercise.normalizedExerciseName === nextExercise.normalizedExerciseName);
+  if (existingIndex < 0) return [...exercises, nextExercise];
+
+  return exercises.map((exercise, index) => {
+    if (index !== existingIndex) return exercise;
+    const sets = [...exercise.sets, ...nextExercise.sets].map((set, setIndex) => ({ ...set, setNumber: setIndex + 1, setsCount: exercise.sets.length + nextExercise.sets.length }));
+    return {
+      ...exercise,
+      muscleGroup: exercise.muscleGroup ?? nextExercise.muscleGroup,
+      notes: [exercise.notes, nextExercise.notes].filter(Boolean).join("; ") || undefined,
+      sets,
+    };
+  });
+}
+
 function rebuildWorkoutFromExercises(workout: WorkoutLog, exercises: ParsedExercise[]): WorkoutLog {
   const rawText = exercises.map((exercise) => `${exercise.exerciseName}: ${formatSetList(exercise)}`).join("\n");
   return {
@@ -1573,6 +1677,22 @@ function getWorkoutTotals(workout: WorkoutLog) {
     },
     { sets: 0, reps: 0, volume: 0 },
   );
+}
+
+function getActiveWorkoutInsight(workout: WorkoutLog) {
+  const completedExercises = workout.exercises.filter((exercise) => exercise.sets.length).length;
+  const allSets = workout.exercises.flatMap((exercise) => exercise.sets.map((set) => ({ exerciseName: exercise.exerciseName, set })));
+  const topSet = allSets
+    .map((entry) => ({ ...entry, score: (entry.set.weight ?? 0) * (entry.set.reps ?? 0) }))
+    .sort((a, b) => b.score - a.score)[0];
+  const lastLift = [...workout.exercises].reverse().find((exercise) => exercise.sets.length)?.exerciseName ?? "Nothing logged yet";
+
+  return {
+    completedExercises,
+    totalExercises: workout.exercises.length,
+    topSet: topSet ? `${topSet.exerciseName} ${topSet.set.weight ?? "BW"} x ${topSet.set.reps ?? "?"}` : "No sets yet",
+    lastLift,
+  };
 }
 
 function getWorkoutListTotals(workouts: WorkoutLog[]) {
