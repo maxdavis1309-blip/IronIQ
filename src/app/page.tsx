@@ -22,7 +22,6 @@ import { loadCloudSyncState, saveCloudSyncState } from "@/lib/cloud-sync";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import {
   getExerciseHistory,
-  getTopSets,
   getVolumeByMuscleGroup,
   suggestNextSet,
   suggestTodaysWorkout,
@@ -129,8 +128,8 @@ export default function Home() {
   const loggedExerciseOptions = useMemo(() => getLoggedExerciseOptions(workouts), [workouts]);
   const selectedLoggedExercise = loggedExerciseOptions.some((option) => option.normalizedName === selectedExercise) ? selectedExercise : (loggedExerciseOptions[0]?.normalizedName ?? "");
   const exerciseHistory = useMemo(() => getExerciseHistory(userId, selectedLoggedExercise, workouts), [selectedLoggedExercise, workouts]);
+  const recentWorkingTopSets = useMemo(() => getRecentWorkingTopSets(selectedLoggedExercise, workouts), [selectedLoggedExercise, workouts]);
   const selectedLiftHistory = useMemo(() => getExerciseHistory(userId, selectedCatalogExercise, workouts), [selectedCatalogExercise, workouts]);
-  const topSets = useMemo(() => getTopSets(workouts).slice(0, 5), [workouts]);
   const filteredHistory = useMemo(() => filterHistory(workouts, search, historyTypeFilter), [historyTypeFilter, search, workouts]);
   const historyTotals = useMemo(() => getWorkoutListTotals(filteredHistory), [filteredHistory]);
   const plannedSets = useMemo(() => buildPlannedSets(setDrafts, dropSetEnabled, dropSetWeight, dropSetReps), [setDrafts, dropSetEnabled, dropSetWeight, dropSetReps]);
@@ -1304,34 +1303,20 @@ export default function Home() {
             )}
           </Section>
 
-          <Section title="Recent Sets">
+          <Section title="Recent Top Sets">
             <div className="space-y-2">
-              {exerciseHistory.length ? (
-                exerciseHistory.slice(0, 8).map(({ workout, set }) => (
+              {recentWorkingTopSets.length ? (
+                recentWorkingTopSets.map(({ workout, set, e1rm }) => (
                   <div key={`${workout.id}-${set.id}`} className="flex items-center justify-between rounded-2xl bg-white/[0.04] p-3 text-sm">
                     <span className="text-zinc-300">{formatShortDate(workout.workoutDate)}</span>
-                    <span className="font-semibold text-amber-100">
-                      {set.weight ?? "BW"} x {set.reps ?? "?"}
-                    </span>
+                    <div className="text-right">
+                      <div className="font-semibold text-amber-100">{set.weight ?? "BW"} x {set.reps ?? "?"}</div>
+                      <div className="text-xs text-zinc-500">e1RM {e1rm}</div>
+                    </div>
                   </div>
                 ))
               ) : (
-                <EmptyState title="No sets for this lift yet" body="Choose a logged lift above to see recent sets." />
-              )}
-            </div>
-          </Section>
-
-          <Section title="Top Sets">
-            <div className="space-y-2">
-              {topSets.length ? (
-                topSets.map((item) => (
-                  <div key={`${item.workout.id}-${item.set.id}`} className="flex items-center justify-between rounded-2xl bg-white/[0.04] p-3 text-sm">
-                    <span>{item.exercise}</span>
-                    <span className="text-zinc-400">{item.set.weight} x {item.set.reps} - e1RM {item.e1rm}</span>
-                  </div>
-                ))
-              ) : (
-                <EmptyState title="No top sets yet" body="Your best sets will appear after you log a few lifts." />
+                <EmptyState title="No working sets yet" body="Drop sets are ignored here, so this stays focused on your last real set." />
               )}
             </div>
           </Section>
@@ -1730,6 +1715,34 @@ function getLoggedExerciseOptions(workouts: WorkoutLog[]) {
     if (dateSort) return dateSort;
     return b.setCount - a.setCount;
   });
+}
+
+function getRecentWorkingTopSets(exerciseName: string, workouts: WorkoutLog[]) {
+  if (!exerciseName) return [];
+  const normalized = normalizeExerciseName(exerciseName);
+
+  return workouts
+    .flatMap((workout) =>
+      workout.exercises
+        .filter((exercise) => exercise.normalizedExerciseName === normalized)
+        .map((exercise) => {
+          const workingSet = [...exercise.sets].reverse().find((set) => !set.notes?.toLowerCase().includes("drop"));
+          return workingSet
+            ? {
+                workout,
+                set: workingSet,
+                e1rm: estimatedOneRepMax(workingSet.weight, workingSet.reps),
+              }
+            : null;
+        })
+        .filter((entry): entry is { workout: WorkoutLog; set: WorkoutLog["exercises"][number]["sets"][number]; e1rm: number } => entry !== null),
+    )
+    .sort((a, b) => {
+      const dateSort = b.workout.workoutDate.localeCompare(a.workout.workoutDate);
+      if (dateSort) return dateSort;
+      return new Date(b.workout.updatedAt).getTime() - new Date(a.workout.updatedAt).getTime();
+    })
+    .slice(0, 8);
 }
 
 function getActiveWorkoutInsight(workout: WorkoutLog) {
