@@ -3,7 +3,7 @@
 import { ChevronDown, Pencil, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { WorkoutLog } from "@/lib/types";
-import { formatLongDate, titleCase } from "@/lib/utils";
+import { formatLongDate, workoutTypeLabel } from "@/lib/utils";
 
 export function WorkoutCard({
   workout,
@@ -33,7 +33,7 @@ export function WorkoutCard({
         </button>
         <div className="flex shrink-0 items-center gap-2">
           <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-xs font-semibold text-emerald-100">
-            {titleCase(workout.workoutType)}
+            {workoutTypeLabel(workout.workoutType)}
           </span>
           {!compact && onEdit && (
             <button

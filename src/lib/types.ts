@@ -2,6 +2,8 @@ export type WorkoutType =
   | "push"
   | "pull"
   | "legs"
+  | "chest-back"
+  | "shoulders-arms"
   | "chest"
   | "back"
   | "arms"

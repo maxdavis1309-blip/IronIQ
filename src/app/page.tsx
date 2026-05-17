@@ -30,7 +30,7 @@ import {
 } from "@/lib/intelligence";
 import type { CloudSyncState, CoachMessage, ParseResult, ParsedExercise, RecoveryEntry, WorkoutLog, WorkoutType } from "@/lib/types";
 import type { User } from "@supabase/supabase-js";
-import { estimatedOneRepMax, formatShortDate, normalizeExerciseName, titleCase, uid } from "@/lib/utils";
+import { estimatedOneRepMax, formatShortDate, normalizeExerciseName, titleCase, uid, workoutTypeLabel } from "@/lib/utils";
 import { Section } from "@/components/ui/Section";
 import { StatCard } from "@/components/ui/StatCard";
 import { WorkoutCard } from "@/components/WorkoutCard";
@@ -40,7 +40,7 @@ const WORKOUTS_STORAGE_KEY = "ironiq.workouts.v1";
 const ACTIVE_WORKOUT_STORAGE_KEY = "ironiq.activeWorkout.v1";
 const RECOVERY_STORAGE_KEY = "ironiq.recovery.v1";
 const chips = ["Chest", "Back", "Legs", "Push", "Pull", "Arms", "Shoulders", "Cardio", "Injury note", "Bodyweight"];
-const historyTypeFilters = ["all", "push", "pull", "legs", "chest", "back", "arms", "shoulders", "cardio", "recovery", "unknown"] as const;
+const historyTypeFilters = ["all", "push", "pull", "legs", "chest-back", "shoulders-arms", "chest", "back", "arms", "shoulders", "cardio", "recovery", "unknown"] as const;
 const tabs = [
   { id: "today", label: "Today", icon: Dumbbell },
   { id: "history", label: "History", icon: History },
@@ -524,7 +524,7 @@ export default function Home() {
 
   function deleteWorkout(workoutId: string) {
     const target = workouts.find((workout) => workout.id === workoutId);
-    const label = target ? `${formatShortDate(target.workoutDate)} ${titleCase(target.workoutType)}` : "this workout";
+    const label = target ? `${formatShortDate(target.workoutDate)} ${workoutTypeLabel(target.workoutType)}` : "this workout";
     if (!confirm(`Delete ${label}? This cannot be undone.`)) return;
     setWorkouts((current) => current.filter((workout) => workout.id !== workoutId));
     if (editingWorkout?.id === workoutId) setEditingWorkout(null);
@@ -678,8 +678,8 @@ export default function Home() {
         activeWorkout?: WorkoutLog | null;
         recoveryEntries?: RecoveryEntry[];
       };
-      if (Array.isArray(payload.workouts)) setWorkouts(payload.workouts);
-      if ("activeWorkout" in payload) setActiveWorkout(payload.activeWorkout ?? null);
+      if (Array.isArray(payload.workouts)) setWorkouts(payload.workouts.map(normalizeWorkoutSplitType));
+      if ("activeWorkout" in payload) setActiveWorkout(payload.activeWorkout ? normalizeWorkoutSplitType(payload.activeWorkout) : null);
       if (Array.isArray(payload.recoveryEntries)) setRecoveryEntries(payload.recoveryEntries);
       setBackupStatus(`Imported ${payload.workouts?.length ?? 0} workouts`);
       setBackupText("");
@@ -1156,7 +1156,7 @@ export default function Home() {
                     isActive ? "border-emerald-200/40 bg-emerald-200/15 text-emerald-100" : "border-white/10 bg-white/[0.04] text-zinc-400"
                   }`}
                 >
-                  {type === "all" ? "All" : titleCase(type)}
+                  {type === "all" ? "All" : workoutTypeLabel(type)}
                 </button>
               );
             })}
@@ -1504,8 +1504,8 @@ function splitDayToWorkoutType(day: SplitDay): WorkoutType {
   const map: Record<SplitDay, WorkoutType> = {
     Push: "push",
     Pull: "pull",
-    "Shoulders & Arms": "shoulders",
-    "Chest & Back": "chest",
+    "Shoulders & Arms": "shoulders-arms",
+    "Chest & Back": "chest-back",
     Legs: "legs",
     Custom: "unknown",
   };
@@ -1619,7 +1619,7 @@ function buildBackupPayload(workouts: WorkoutLog[], activeWorkout: WorkoutLog | 
 
 function formatWorkoutForSharing(workout: WorkoutLog) {
   const lines = [
-    `${workout.workoutDate} - ${titleCase(workout.workoutType)}`,
+    `${workout.workoutDate} - ${workoutTypeLabel(workout.workoutType)}`,
     workout.aiSummary,
     "",
     ...workout.exercises.flatMap((exercise) => [
@@ -1678,9 +1678,10 @@ function mergeSyncStates(cloudState: CloudSyncState, localState: CloudSyncState)
 function mergeWorkouts(cloudWorkouts: WorkoutLog[], localWorkouts: WorkoutLog[]) {
   const workoutsById = new Map<string, WorkoutLog>();
   [...cloudWorkouts, ...localWorkouts].forEach((workout) => {
+    const normalizedWorkout = normalizeWorkoutSplitType(workout);
     const existing = workoutsById.get(workout.id);
     if (!existing || new Date(workout.updatedAt).getTime() >= new Date(existing.updatedAt).getTime()) {
-      workoutsById.set(workout.id, workout);
+      workoutsById.set(workout.id, normalizedWorkout);
     }
   });
 
@@ -1689,6 +1690,17 @@ function mergeWorkouts(cloudWorkouts: WorkoutLog[], localWorkouts: WorkoutLog[])
     if (dateSort) return dateSort;
     return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
   });
+}
+
+function normalizeWorkoutSplitType(workout: WorkoutLog): WorkoutLog {
+  const splitText = [workout.rawText, workout.aiSummary, ...workout.tags].join(" ").toLowerCase();
+  if (workout.workoutType === "chest" && /chest\s*(&|and|-|\/)\s*back/.test(splitText)) {
+    return { ...workout, workoutType: "chest-back" };
+  }
+  if (workout.workoutType === "shoulders" && /shoulders?\s*(&|and|-|\/)\s*arms?/.test(splitText)) {
+    return { ...workout, workoutType: "shoulders-arms" };
+  }
+  return workout;
 }
 
 function mergeRecoveryEntries(cloudEntries: RecoveryEntry[], localEntries: RecoveryEntry[]) {
@@ -1780,7 +1792,7 @@ function readStoredWorkouts() {
     const saved = localStorage.getItem(WORKOUTS_STORAGE_KEY);
     if (!saved) return null;
     const parsed = JSON.parse(saved);
-    return Array.isArray(parsed) ? (parsed as WorkoutLog[]) : null;
+    return Array.isArray(parsed) ? (parsed as WorkoutLog[]).map(normalizeWorkoutSplitType) : null;
   } catch {
     return null;
   }
@@ -1790,7 +1802,7 @@ function readStoredActiveWorkout() {
   try {
     const saved = localStorage.getItem(ACTIVE_WORKOUT_STORAGE_KEY);
     if (!saved) return null;
-    return JSON.parse(saved) as WorkoutLog;
+    return normalizeWorkoutSplitType(JSON.parse(saved) as WorkoutLog);
   } catch {
     return null;
   }
@@ -1834,7 +1846,7 @@ function WorkoutEditPanel({
   onAddSet: (exerciseIndex: number) => void;
   onRemoveSet: (exerciseIndex: number, setIndex: number) => void;
 }) {
-  const workoutTypes: WorkoutType[] = ["push", "pull", "legs", "chest", "back", "arms", "shoulders", "cardio", "recovery", "unknown"];
+  const workoutTypes: WorkoutType[] = ["push", "pull", "legs", "chest-back", "shoulders-arms", "chest", "back", "arms", "shoulders", "cardio", "recovery", "unknown"];
 
   return (
     <section className="rounded-2xl border border-amber-200/20 bg-amber-200/[0.06] p-4">
@@ -1868,7 +1880,7 @@ function WorkoutEditPanel({
         >
           {workoutTypes.map((type) => (
             <option key={type} value={type}>
-              {titleCase(type)}
+              {workoutTypeLabel(type)}
             </option>
           ))}
         </select>

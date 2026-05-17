@@ -1,5 +1,5 @@
 import type { BodyMetrics, ParseResult, ParsedExercise, WorkoutType } from "@/lib/types";
-import { normalizeExerciseName, titleCase, uid } from "@/lib/utils";
+import { normalizeExerciseName, titleCase, uid, workoutTypeLabel } from "@/lib/utils";
 
 const EXERCISE_ALIASES: Record<string, string> = {
   bench: "Bench Press",
@@ -26,6 +26,8 @@ const EXERCISE_ALIASES: Record<string, string> = {
 };
 
 const TYPE_KEYWORDS: Array<[WorkoutType, string[]]> = [
+  ["chest-back", ["chest & back", "chest and back", "chest-back", "chest/back"]],
+  ["shoulders-arms", ["shoulders & arms", "shoulders and arms", "shoulder and arms", "shoulders-arms", "shoulders/arms"]],
   ["push", ["push", "bench", "chest", "incline", "tricep"]],
   ["pull", ["pull", "row", "pullup", "pulldown", "back"]],
   ["legs", ["legs", "squat", "rdl", "deadlift", "leg press", "hamstring"]],
@@ -198,5 +200,5 @@ function buildSummary(
     : "No clear lifts parsed";
   const noteText = subjectiveNotes.length ? ` Notes: ${subjectiveNotes.join("; ")}.` : "";
   const skippedText = skippedExercises.length ? ` Skipped: ${skippedExercises.join(", ")}.` : "";
-  return `${titleCase(workoutType)} session parsed around ${liftText}.${noteText}${skippedText}`;
+  return `${workoutTypeLabel(workoutType)} session parsed around ${liftText}.${noteText}${skippedText}`;
 }

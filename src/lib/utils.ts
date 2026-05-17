@@ -8,6 +8,14 @@ export function titleCase(value: string) {
   return value.replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+export function workoutTypeLabel(value: string) {
+  const labels: Record<string, string> = {
+    "chest-back": "Chest & Back",
+    "shoulders-arms": "Shoulders & Arms",
+  };
+  return labels[value] ?? titleCase(value);
+}
+
 export function normalizeExerciseName(value: string) {
   return value
     .toLowerCase()
