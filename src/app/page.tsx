@@ -113,6 +113,7 @@ export default function Home() {
   const [cloudReady, setCloudReady] = useState(false);
   const [lastCloudSyncAt, setLastCloudSyncAt] = useState<string | null>(null);
   const [backupStatus, setBackupStatus] = useState("");
+  const [backupText, setBackupText] = useState("");
   const [messages, setMessages] = useState<CoachMessage[]>([
     {
       id: "m_intro",
@@ -667,14 +668,24 @@ export default function Home() {
 
   async function importBackup(file: File | undefined) {
     if (!file) return;
-    const payload = JSON.parse(await file.text()) as {
-      workouts?: WorkoutLog[];
-      activeWorkout?: WorkoutLog | null;
-      recoveryEntries?: RecoveryEntry[];
-    };
-    if (Array.isArray(payload.workouts)) setWorkouts(payload.workouts);
-    if ("activeWorkout" in payload) setActiveWorkout(payload.activeWorkout ?? null);
-    if (Array.isArray(payload.recoveryEntries)) setRecoveryEntries(payload.recoveryEntries);
+    importBackupPayload(await file.text());
+  }
+
+  function importBackupPayload(rawPayload: string) {
+    try {
+      const payload = JSON.parse(rawPayload) as {
+        workouts?: WorkoutLog[];
+        activeWorkout?: WorkoutLog | null;
+        recoveryEntries?: RecoveryEntry[];
+      };
+      if (Array.isArray(payload.workouts)) setWorkouts(payload.workouts);
+      if ("activeWorkout" in payload) setActiveWorkout(payload.activeWorkout ?? null);
+      if (Array.isArray(payload.recoveryEntries)) setRecoveryEntries(payload.recoveryEntries);
+      setBackupStatus(`Imported ${payload.workouts?.length ?? 0} workouts`);
+      setBackupText("");
+    } catch {
+      setBackupStatus("Import failed. Check that the pasted data is valid JSON.");
+    }
   }
 
   function submitLog() {
@@ -1424,6 +1435,20 @@ export default function Home() {
                 <input type="file" accept="application/json" className="hidden" onChange={(event) => importBackup(event.target.files?.[0])} />
               </label>
             </div>
+            <textarea
+              value={backupText}
+              onChange={(event) => setBackupText(event.target.value)}
+              placeholder="Paste backup data"
+              className="mt-3 min-h-28 w-full resize-y rounded-2xl border border-white/10 bg-black/30 p-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-emerald-200/50"
+            />
+            <button
+              type="button"
+              onClick={() => importBackupPayload(backupText)}
+              disabled={!backupText.trim()}
+              className="mt-2 min-h-12 w-full rounded-2xl bg-emerald-200 px-4 font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:bg-white/[0.06] disabled:text-zinc-500"
+            >
+              Import pasted data
+            </button>
             {backupStatus && <div className="mt-2 rounded-2xl bg-white/[0.04] p-3 text-sm text-zinc-300">{backupStatus}</div>}
             <button type="button" onClick={clearAllData} className="mt-2 min-h-12 w-full rounded-2xl border border-rose-300/20 bg-rose-300/10 px-4 font-semibold text-rose-100">
               Clear local data
