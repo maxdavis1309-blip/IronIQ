@@ -28,7 +28,7 @@ import {
   summarizeLast30Days,
 } from "@/lib/intelligence";
 import type { CloudSyncState, CoachMessage, ParseResult, ParsedExercise, RecoveryEntry, WorkoutLog, WorkoutType } from "@/lib/types";
-import type { User } from "@supabase/supabase-js";
+import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { estimatedOneRepMax, formatShortDate, normalizeExerciseName, titleCase, uid, workoutTypeLabel } from "@/lib/utils";
 import { Section } from "@/components/ui/Section";
 import { StatCard } from "@/components/ui/StatCard";
@@ -201,7 +201,7 @@ export default function Home() {
   useEffect(() => {
     if (!mounted || !supabase) return;
 
-    supabase.auth.getUser().then(({ data }) => {
+    recoverAuthFromUrl(supabase).then(() => supabase.auth.getUser()).then(({ data }) => {
       setUser(data.user ?? null);
       if (data.user) {
         loadCloudState(data.user.id);
@@ -256,7 +256,7 @@ export default function Home() {
     setSyncStatus("Sending login link...");
     const { error } = await supabase.auth.signInWithOtp({
       email: authEmail.trim(),
-      options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+      options: { emailRedirectTo: window.location.origin },
     });
     setSyncStatus(error ? error.message : "Check your email for the login link");
   }
@@ -1851,6 +1851,26 @@ function readLocalSyncState(): CloudSyncState {
     activeWorkout: readStoredActiveWorkout(),
     recoveryEntries: readStoredRecovery() ?? [],
   };
+}
+
+async function recoverAuthFromUrl(supabase: SupabaseClient) {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("code");
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const accessToken = hashParams.get("access_token");
+  const refreshToken = hashParams.get("refresh_token");
+
+  if (accessToken && refreshToken) {
+    await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+    window.history.replaceState(null, "", window.location.pathname);
+    return;
+  }
+
+  if (code) {
+    await supabase.auth.exchangeCodeForSession(code);
+    url.searchParams.delete("code");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }
 }
 
 function mergeSyncStates(cloudState: CloudSyncState, localState: CloudSyncState): CloudSyncState {
