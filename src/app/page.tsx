@@ -88,7 +88,7 @@ export default function Home() {
   const [editingWorkout, setEditingWorkout] = useState<WorkoutEditDraft | null>(null);
   const [finishDraft, setFinishDraft] = useState<WorkoutEditDraft | null>(null);
   const [finishError, setFinishError] = useState("");
-  const [selectedExercise, setSelectedExercise] = useState("bench press");
+  const [selectedExercise, setSelectedExercise] = useState("");
   const [selectedSplitDay, setSelectedSplitDay] = useState<SplitDay>("Push");
   const [selectedCategory, setSelectedCategory] = useState<ExerciseCategory>("Chest");
   const [selectedCatalogExercise, setSelectedCatalogExercise] = useState<string>(splitCatalog.Push[0]);
@@ -126,17 +126,9 @@ export default function Home() {
   const summary = useMemo(() => summarizeLast30Days(userId, workouts), [workouts]);
   const recommendation = useMemo(() => suggestTodaysWorkout(userId, workouts), [workouts]);
   const volumeByGroup = useMemo(() => getVolumeByMuscleGroup(userId, workouts), [workouts]);
-  const exerciseNames = useMemo(
-    () =>
-      Array.from(
-        new Set([
-          ...Object.values(exerciseCatalog).flat().map(normalizeExerciseName),
-          ...workouts.flatMap((w) => w.exercises.map((e) => e.normalizedExerciseName)),
-        ]),
-      ).sort(),
-    [workouts],
-  );
-  const exerciseHistory = useMemo(() => getExerciseHistory(userId, selectedExercise, workouts), [selectedExercise, workouts]);
+  const loggedExerciseOptions = useMemo(() => getLoggedExerciseOptions(workouts), [workouts]);
+  const selectedLoggedExercise = loggedExerciseOptions.some((option) => option.normalizedName === selectedExercise) ? selectedExercise : (loggedExerciseOptions[0]?.normalizedName ?? "");
+  const exerciseHistory = useMemo(() => getExerciseHistory(userId, selectedLoggedExercise, workouts), [selectedLoggedExercise, workouts]);
   const selectedLiftHistory = useMemo(() => getExerciseHistory(userId, selectedCatalogExercise, workouts), [selectedCatalogExercise, workouts]);
   const topSets = useMemo(() => getTopSets(workouts).slice(0, 5), [workouts]);
   const filteredHistory = useMemo(() => filterHistory(workouts, search, historyTypeFilter), [historyTypeFilter, search, workouts]);
@@ -1267,35 +1259,66 @@ export default function Home() {
 
       {activeTab === "lifts" && (
         <div className="space-y-4">
-          <Section title="Exercise Intelligence">
-            <select
-              value={selectedExercise}
-              onChange={(event) => setSelectedExercise(event.target.value)}
-              className="min-h-12 w-full rounded-2xl border border-white/10 bg-black/40 px-3 text-zinc-100"
-            >
-              {exerciseNames.map((name) => (
-                <option key={name} value={name}>
-                  {titleCase(name)}
-                </option>
-              ))}
-            </select>
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              <StatCard label="sessions" value={exerciseHistory.length} />
-              <StatCard label="best e1rm" value={exerciseHistory.length ? Math.max(...exerciseHistory.map(({ set }) => estimatedOneRepMax(set.weight, set.reps))) : 0} tone="gold" />
-              <StatCard label="last" value={exerciseHistory[0] ? formatShortDate(exerciseHistory[0].workout.workoutDate) : "-"} tone="mint" />
-            </div>
-            <p className="mt-3 rounded-2xl bg-emerald-300/10 p-3 text-sm text-emerald-100">
-              {suggestNextSet(userId, selectedExercise, workouts)}
-            </p>
+          <Section title="Your Lifts">
+            {loggedExerciseOptions.length ? (
+              <>
+                <select
+                  value={selectedLoggedExercise}
+                  onChange={(event) => setSelectedExercise(event.target.value)}
+                  className="min-h-12 w-full rounded-2xl border border-white/10 bg-black/40 px-3 text-zinc-100"
+                >
+                  {loggedExerciseOptions.map((option) => (
+                    <option key={option.normalizedName} value={option.normalizedName}>
+                      {option.displayName}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                  {loggedExerciseOptions.map((option) => {
+                    const isActive = selectedLoggedExercise === option.normalizedName;
+                    return (
+                      <button
+                        key={option.normalizedName}
+                        type="button"
+                        onClick={() => setSelectedExercise(option.normalizedName)}
+                        className={`shrink-0 rounded-full border px-3 py-2 text-sm font-semibold ${
+                          isActive ? "border-amber-200/40 bg-amber-200/15 text-amber-100" : "border-white/10 bg-white/[0.04] text-zinc-400"
+                        }`}
+                      >
+                        {option.displayName}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <StatCard label="sessions" value={new Set(exerciseHistory.map(({ workout }) => workout.id)).size} />
+                  <StatCard label="best e1rm" value={exerciseHistory.length ? Math.max(...exerciseHistory.map(({ set }) => estimatedOneRepMax(set.weight, set.reps))) : 0} tone="gold" />
+                  <StatCard label="last" value={exerciseHistory[0] ? formatShortDate(exerciseHistory[0].workout.workoutDate) : "-"} tone="mint" />
+                </div>
+                <p className="mt-3 rounded-2xl bg-emerald-300/10 p-3 text-sm text-emerald-100">
+                  {suggestNextSet(userId, selectedLoggedExercise, workouts)}
+                </p>
+              </>
+            ) : (
+              <EmptyState title="No lifts logged yet" body="Finish a workout and your lift list will build itself from what you actually do." />
+            )}
           </Section>
 
-          <Section title="Trend Placeholders">
-            <div className="grid h-36 grid-cols-8 items-end gap-2 rounded-2xl bg-black/30 p-3">
-              {[34, 52, 45, 68, 58, 74, 70, 86].map((height, index) => (
-                <div key={index} className="rounded-t-lg bg-amber-200/80" style={{ height: `${height}%` }} />
-              ))}
+          <Section title="Recent Sets">
+            <div className="space-y-2">
+              {exerciseHistory.length ? (
+                exerciseHistory.slice(0, 8).map(({ workout, set }) => (
+                  <div key={`${workout.id}-${set.id}`} className="flex items-center justify-between rounded-2xl bg-white/[0.04] p-3 text-sm">
+                    <span className="text-zinc-300">{formatShortDate(workout.workoutDate)}</span>
+                    <span className="font-semibold text-amber-100">
+                      {set.weight ?? "BW"} x {set.reps ?? "?"}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <EmptyState title="No sets for this lift yet" body="Choose a logged lift above to see recent sets." />
+              )}
             </div>
-            <p className="mt-3 text-sm text-zinc-400">Insight: shoulder discomfort appears most often near incline or heavy pressing days.</p>
           </Section>
 
           <Section title="Top Sets">
@@ -1677,6 +1700,36 @@ function getWorkoutTotals(workout: WorkoutLog) {
     },
     { sets: 0, reps: 0, volume: 0 },
   );
+}
+
+function getLoggedExerciseOptions(workouts: WorkoutLog[]) {
+  const exerciseMap = new Map<string, { normalizedName: string; displayName: string; lastDate: string; setCount: number }>();
+
+  workouts.forEach((workout) => {
+    workout.exercises.forEach((exercise) => {
+      if (!exercise.sets.length) return;
+      const normalizedName = exercise.normalizedExerciseName || normalizeExerciseName(exercise.exerciseName);
+      const existing = exerciseMap.get(normalizedName);
+      const setCount = (existing?.setCount ?? 0) + exercise.sets.length;
+
+      if (!existing || workout.workoutDate.localeCompare(existing.lastDate) > 0) {
+        exerciseMap.set(normalizedName, {
+          normalizedName,
+          displayName: exercise.exerciseName,
+          lastDate: workout.workoutDate,
+          setCount,
+        });
+      } else {
+        exerciseMap.set(normalizedName, { ...existing, setCount });
+      }
+    });
+  });
+
+  return Array.from(exerciseMap.values()).sort((a, b) => {
+    const dateSort = b.lastDate.localeCompare(a.lastDate);
+    if (dateSort) return dateSort;
+    return b.setCount - a.setCount;
+  });
 }
 
 function getActiveWorkoutInsight(workout: WorkoutLog) {
