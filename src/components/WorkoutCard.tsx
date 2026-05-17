@@ -18,7 +18,7 @@ export function WorkoutCard({
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="text-base font-semibold text-zinc-50">{formatLongDate(workout.workoutDate)}</div>
-          <p className="mt-1 text-sm text-zinc-400">{workout.aiSummary}</p>
+          {compact && <p className="mt-1 text-sm text-zinc-400">{workout.aiSummary}</p>}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-xs font-semibold text-emerald-100">
@@ -49,11 +49,9 @@ export function WorkoutCard({
         </div>
       </div>
 
-      {!compact && <p className="mt-3 rounded-2xl bg-black/30 p-3 text-sm text-zinc-300">{workout.rawText}</p>}
-
-      <div className="mt-3 space-y-2">
+      <div className={`mt-3 ${compact ? "space-y-2" : "space-y-3"}`}>
         {workout.exercises.map((exercise) => (
-          <div key={`${workout.id}-${exercise.normalizedExerciseName}`}>
+          <div key={`${workout.id}-${exercise.normalizedExerciseName}`} className={compact ? "" : "rounded-2xl bg-black/20 p-3"}>
             <div className="text-sm font-semibold text-amber-100">{exercise.exerciseName}</div>
             <div className="mt-1 flex flex-wrap gap-1.5">
               {exercise.sets.map((set) => (
