@@ -265,7 +265,7 @@ export default function Home() {
   async function signInWithPastedMagicLink() {
     if (!supabase || !magicLinkText.trim()) return;
     setSyncStatus("Checking magic link...");
-    const { error } = await recoverAuthFromMagicLink(supabase, magicLinkText.trim());
+    const { error } = await recoverAuthFromMagicLink(supabase, magicLinkText.trim(), authEmail.trim());
     if (error) {
       setSyncStatus(error.message);
       return;
@@ -1892,7 +1892,7 @@ async function recoverAuthFromUrl(supabase: SupabaseClient) {
   return recoverAuthFromMagicLink(supabase, window.location.href);
 }
 
-async function recoverAuthFromMagicLink(supabase: SupabaseClient, magicLink: string) {
+async function recoverAuthFromMagicLink(supabase: SupabaseClient, magicLink: string, email = "") {
   let url: URL;
   try {
     url = new URL(magicLink);
@@ -1902,6 +1902,7 @@ async function recoverAuthFromMagicLink(supabase: SupabaseClient, magicLink: str
 
   const code = url.searchParams.get("code");
   const tokenHash = url.searchParams.get("token_hash");
+  const token = url.searchParams.get("token");
   const type = url.searchParams.get("type");
   const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
   const accessToken = hashParams.get("access_token");
@@ -1925,11 +1926,18 @@ async function recoverAuthFromMagicLink(supabase: SupabaseClient, magicLink: str
     return { error: result.error };
   }
 
+  if (token && type) {
+    if (!email) return { error: new Error("Enter your email above, then use the pasted magic link again") };
+    const result = await supabase.auth.verifyOtp({ email, token, type: type as Parameters<typeof supabase.auth.verifyOtp>[0]["type"] });
+    clearAuthUrl();
+    return { error: result.error };
+  }
+
   return { error: new Error("No login token found in that link") };
 }
 
 function clearAuthUrl() {
-  if (window.location.hash || window.location.search.includes("code=") || window.location.search.includes("token_hash=")) {
+  if (window.location.hash || window.location.search.includes("code=") || window.location.search.includes("token_hash=") || window.location.search.includes("token=")) {
     window.history.replaceState(null, "", window.location.pathname);
   }
 }
