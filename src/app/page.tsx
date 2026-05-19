@@ -2262,23 +2262,23 @@ function WorkoutEditPanel({
 
   return (
     <section className="rounded-2xl border border-amber-200/20 bg-amber-200/[0.06] p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <div className="text-sm font-semibold text-amber-100">{title}</div>
           <p className="mt-1 text-xs text-zinc-400">{body}</p>
         </div>
-        <div className="flex gap-2">
-          <button type="button" onClick={onCancel} className="min-h-10 rounded-2xl border border-white/10 px-3 text-sm font-semibold text-zinc-300">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0">
+          <button type="button" onClick={onCancel} className="min-h-11 rounded-2xl border border-white/10 px-3 text-sm font-semibold text-zinc-300">
             Cancel
           </button>
-          <button type="button" onClick={onSave} className="min-h-10 rounded-2xl bg-emerald-200 px-3 text-sm font-semibold text-zinc-950">
+          <button type="button" onClick={onSave} className="min-h-11 rounded-2xl bg-emerald-200 px-3 text-sm font-semibold text-zinc-950">
             {saveLabel}
           </button>
         </div>
       </div>
       {error && <div className="mt-3 rounded-2xl border border-red-300/20 bg-red-300/10 p-3 text-sm font-semibold text-red-100">{error}</div>}
 
-      <div className="mt-4 grid grid-cols-2 gap-2">
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
         <input
           type="date"
           value={draft.workoutDate}
@@ -2320,6 +2320,12 @@ function WorkoutEditPanel({
       <div className="mt-4 space-y-3">
         {draft.exercises.map((exercise, exerciseIndex) => (
           <div key={`${draft.id}-${exerciseIndex}`} className="rounded-2xl border border-white/10 bg-black/30 p-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-100">Lift {exerciseIndex + 1}</div>
+              <button type="button" onClick={() => onAddSet(exerciseIndex)} className="min-h-9 rounded-2xl border border-white/10 px-3 text-xs font-semibold text-amber-100">
+                Add set
+              </button>
+            </div>
             <div className="grid gap-2 sm:grid-cols-2">
               <input
                 value={exercise.exerciseName}
@@ -2342,40 +2348,42 @@ function WorkoutEditPanel({
             />
             <div className="mt-3 space-y-2">
               {exercise.sets.map((set, setIndex) => (
-                <div key={set.id} className="grid grid-cols-[1fr_1fr_1.4fr_auto] gap-2">
-                  <input
-                    value={set.weight}
-                    onChange={(event) => onSetChange(exerciseIndex, setIndex, "weight", event.target.value)}
-                    placeholder="Weight"
-                    inputMode="decimal"
-                    className="min-h-10 rounded-xl border border-white/10 bg-zinc-950 px-2 text-sm text-zinc-100 placeholder:text-zinc-600"
-                  />
-                  <input
-                    value={set.reps}
-                    onChange={(event) => onSetChange(exerciseIndex, setIndex, "reps", event.target.value)}
-                    placeholder="Reps"
-                    inputMode="numeric"
-                    className="min-h-10 rounded-xl border border-white/10 bg-zinc-950 px-2 text-sm text-zinc-100 placeholder:text-zinc-600"
-                  />
+                <div key={set.id} className="rounded-2xl bg-zinc-950/70 p-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Set {setIndex + 1}</div>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveSet(exerciseIndex, setIndex)}
+                      className="min-h-8 rounded-xl border border-red-300/20 px-3 text-xs font-semibold text-red-100"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <input
+                      value={set.weight}
+                      onChange={(event) => onSetChange(exerciseIndex, setIndex, "weight", event.target.value)}
+                      placeholder="Weight"
+                      inputMode="decimal"
+                      className="min-h-11 rounded-xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100 placeholder:text-zinc-600"
+                    />
+                    <input
+                      value={set.reps}
+                      onChange={(event) => onSetChange(exerciseIndex, setIndex, "reps", event.target.value)}
+                      placeholder="Reps"
+                      inputMode="numeric"
+                      className="min-h-11 rounded-xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100 placeholder:text-zinc-600"
+                    />
+                  </div>
                   <input
                     value={set.notes}
                     onChange={(event) => onSetChange(exerciseIndex, setIndex, "notes", event.target.value)}
                     placeholder="Notes"
-                    className="min-h-10 rounded-xl border border-white/10 bg-zinc-950 px-2 text-sm text-zinc-100 placeholder:text-zinc-600"
+                    className="mt-2 min-h-11 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100 placeholder:text-zinc-600"
                   />
-                  <button
-                    type="button"
-                    onClick={() => onRemoveSet(exerciseIndex, setIndex)}
-                    className="min-h-10 rounded-xl border border-red-300/20 px-3 text-sm font-semibold text-red-100"
-                  >
-                    Del
-                  </button>
                 </div>
               ))}
             </div>
-            <button type="button" onClick={() => onAddSet(exerciseIndex)} className="mt-3 min-h-10 rounded-2xl border border-white/10 px-3 text-sm font-semibold text-amber-100">
-              Add set
-            </button>
           </div>
         ))}
       </div>
