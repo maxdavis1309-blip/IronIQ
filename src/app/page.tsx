@@ -107,6 +107,7 @@ export default function Home() {
   });
   const [coachInput, setCoachInput] = useState("");
   const [authEmail, setAuthEmail] = useState("");
+  const [magicLinkText, setMagicLinkText] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const [syncStatus, setSyncStatus] = useState("Local only");
   const [cloudReady, setCloudReady] = useState(false);
@@ -259,6 +260,24 @@ export default function Home() {
       options: { emailRedirectTo: window.location.origin },
     });
     setSyncStatus(error ? error.message : "Check your email for the login link");
+  }
+
+  async function signInWithPastedMagicLink() {
+    if (!supabase || !magicLinkText.trim()) return;
+    setSyncStatus("Checking magic link...");
+    const { error } = await recoverAuthFromMagicLink(supabase, magicLinkText.trim());
+    if (error) {
+      setSyncStatus(error.message);
+      return;
+    }
+    const { data } = await supabase.auth.getUser();
+    setUser(data.user ?? null);
+    if (data.user) {
+      setMagicLinkText("");
+      loadCloudState(data.user.id);
+    } else {
+      setSyncStatus("Magic link did not create a session");
+    }
   }
 
   async function signOut() {
@@ -1471,16 +1490,32 @@ export default function Home() {
             )}
 
             {supabase && !user && (
-              <div className="mt-3 flex gap-2">
-                <input
-                  value={authEmail}
-                  onChange={(event) => setAuthEmail(event.target.value)}
-                  placeholder="Email for magic link"
-                  type="email"
-                  className="min-h-12 flex-1 rounded-2xl border border-white/10 bg-black/40 px-3 text-sm"
+              <div className="mt-3 space-y-3">
+                <div className="flex gap-2">
+                  <input
+                    value={authEmail}
+                    onChange={(event) => setAuthEmail(event.target.value)}
+                    placeholder="Email for magic link"
+                    type="email"
+                    className="min-h-12 flex-1 rounded-2xl border border-white/10 bg-black/40 px-3 text-sm"
+                  />
+                  <button type="button" onClick={signInWithEmail} className="rounded-2xl bg-emerald-200 px-4 font-semibold text-zinc-950">
+                    Send
+                  </button>
+                </div>
+                <textarea
+                  value={magicLinkText}
+                  onChange={(event) => setMagicLinkText(event.target.value)}
+                  placeholder="Paste magic link if tapping it does not sign in"
+                  className="min-h-24 w-full resize-y rounded-2xl border border-white/10 bg-black/40 p-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-emerald-200/50"
                 />
-                <button type="button" onClick={signInWithEmail} className="rounded-2xl bg-emerald-200 px-4 font-semibold text-zinc-950">
-                  Send
+                <button
+                  type="button"
+                  onClick={signInWithPastedMagicLink}
+                  disabled={!magicLinkText.trim()}
+                  className="min-h-12 w-full rounded-2xl border border-emerald-200/25 bg-emerald-200/10 px-4 font-semibold text-emerald-100 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/[0.04] disabled:text-zinc-500"
+                >
+                  Use pasted magic link
                 </button>
               </div>
             )}
@@ -1854,22 +1889,48 @@ function readLocalSyncState(): CloudSyncState {
 }
 
 async function recoverAuthFromUrl(supabase: SupabaseClient) {
-  const url = new URL(window.location.href);
+  return recoverAuthFromMagicLink(supabase, window.location.href);
+}
+
+async function recoverAuthFromMagicLink(supabase: SupabaseClient, magicLink: string) {
+  let url: URL;
+  try {
+    url = new URL(magicLink);
+  } catch {
+    return { error: new Error("That does not look like a valid magic link") };
+  }
+
   const code = url.searchParams.get("code");
-  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const tokenHash = url.searchParams.get("token_hash");
+  const type = url.searchParams.get("type");
+  const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
   const accessToken = hashParams.get("access_token");
   const refreshToken = hashParams.get("refresh_token");
 
   if (accessToken && refreshToken) {
-    await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
-    window.history.replaceState(null, "", window.location.pathname);
-    return;
+    const result = await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+    clearAuthUrl();
+    return { error: result.error };
   }
 
   if (code) {
-    await supabase.auth.exchangeCodeForSession(code);
-    url.searchParams.delete("code");
-    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+    const result = await supabase.auth.exchangeCodeForSession(code);
+    clearAuthUrl();
+    return { error: result.error };
+  }
+
+  if (tokenHash && type) {
+    const result = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: type as Parameters<typeof supabase.auth.verifyOtp>[0]["type"] });
+    clearAuthUrl();
+    return { error: result.error };
+  }
+
+  return { error: new Error("No login token found in that link") };
+}
+
+function clearAuthUrl() {
+  if (window.location.hash || window.location.search.includes("code=") || window.location.search.includes("token_hash=")) {
+    window.history.replaceState(null, "", window.location.pathname);
   }
 }
 
