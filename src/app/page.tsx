@@ -18,7 +18,7 @@ import { exerciseCatalog, exerciseCategories, splitCatalog, splitDays, type Exer
 import { demoProfile, demoWorkouts } from "@/data/seed";
 import { mockCoachResponse } from "@/lib/ai/coach";
 import { mockParseWorkout } from "@/lib/ai/mock-parser";
-import { loadCloudSyncState, saveCloudSyncState } from "@/lib/cloud-sync";
+import { loadCloudSyncState, saveCloudSyncState, type CloudSyncLoadResult } from "@/lib/cloud-sync";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import {
   getExerciseHistory,
@@ -38,6 +38,7 @@ const userId = "demo-user";
 const WORKOUTS_STORAGE_KEY = "ironiq.workouts.v1";
 const ACTIVE_WORKOUT_STORAGE_KEY = "ironiq.activeWorkout.v1";
 const RECOVERY_STORAGE_KEY = "ironiq.recovery.v1";
+const SYNC_CODE_STORAGE_KEY = "ironiq.syncCode.v1";
 const chips = ["Chest", "Back", "Legs", "Push", "Pull", "Arms", "Shoulders", "Cardio", "Injury note", "Bodyweight"];
 const historyTypeFilters = ["all", "push", "pull", "legs", "chest-back", "shoulders-arms", "chest", "back", "arms", "shoulders", "cardio", "recovery", "unknown"] as const;
 const tabs = [
@@ -108,6 +109,8 @@ export default function Home() {
   const [coachInput, setCoachInput] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [magicLinkText, setMagicLinkText] = useState("");
+  const [syncCode, setSyncCode] = useState("");
+  const [syncCodeReady, setSyncCodeReady] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [syncStatus, setSyncStatus] = useState("Local only");
   const [cloudReady, setCloudReady] = useState(false);
@@ -192,9 +195,11 @@ export default function Home() {
       const savedWorkouts = readStoredWorkouts();
       const savedActiveWorkout = readStoredActiveWorkout();
       const savedRecovery = readStoredRecovery();
+      const savedSyncCode = localStorage.getItem(SYNC_CODE_STORAGE_KEY);
       if (savedWorkouts) setWorkouts(savedWorkouts);
       if (savedActiveWorkout) setActiveWorkout(savedActiveWorkout);
       if (savedRecovery) setRecoveryEntries(savedRecovery);
+      if (savedSyncCode) setSyncCode(savedSyncCode);
       setMounted(true);
     });
   }, []);
@@ -252,6 +257,20 @@ export default function Home() {
     return () => window.clearTimeout(timeout);
   }, [activeWorkout, cloudReady, mounted, recoveryEntries, saveCloudState, supabase, user, workouts]);
 
+  useEffect(() => {
+    if (!mounted || !syncCodeReady || user) return;
+    const timeout = window.setTimeout(() => {
+      setSyncStatus("Syncing...");
+      saveSyncCodeState(syncCode, { workouts, activeWorkout, recoveryEntries })
+        .then((updatedAt) => {
+          setLastCloudSyncAt(updatedAt);
+          setSyncStatus("Synced with code");
+        })
+        .catch((error) => setSyncStatus(error instanceof Error ? error.message : "Sync code save failed"));
+    }, 450);
+    return () => window.clearTimeout(timeout);
+  }, [activeWorkout, mounted, recoveryEntries, syncCode, syncCodeReady, user, workouts]);
+
   async function signInWithEmail() {
     if (!supabase || !authEmail.trim()) return;
     setSyncStatus("Sending login link...");
@@ -298,6 +317,70 @@ export default function Home() {
   function pullCloudState() {
     if (!user) return;
     loadCloudState(user.id);
+  }
+
+  async function connectSyncCode() {
+    const code = syncCode.trim();
+    if (code.length < 6) {
+      setSyncStatus("Use a sync code with at least 6 characters");
+      return;
+    }
+
+    setSyncStatus("Loading sync code...");
+    try {
+      const cloud = await loadSyncCodeState(code);
+      const localState = readLocalSyncState();
+      const mergedState = cloud.state ? mergeSyncStates(cloud.state, localState) : localState;
+      setWorkouts(mergedState.workouts);
+      setActiveWorkout(mergedState.activeWorkout);
+      setRecoveryEntries(mergedState.recoveryEntries);
+      const syncedAt = await saveSyncCodeState(code, mergedState);
+      localStorage.setItem(SYNC_CODE_STORAGE_KEY, code);
+      setLastCloudSyncAt(syncedAt);
+      setSyncCodeReady(true);
+      setSyncStatus("Synced with code");
+    } catch (error) {
+      setSyncCodeReady(false);
+      setSyncStatus(error instanceof Error ? error.message : "Sync code failed");
+    }
+  }
+
+  async function pushSyncCodeState() {
+    if (!syncCodeReady) return;
+    setSyncStatus("Syncing...");
+    try {
+      const syncedAt = await saveSyncCodeState(syncCode, { workouts, activeWorkout, recoveryEntries });
+      setLastCloudSyncAt(syncedAt);
+      setSyncStatus("Synced with code");
+    } catch (error) {
+      setSyncStatus(error instanceof Error ? error.message : "Sync code save failed");
+    }
+  }
+
+  async function pullSyncCodeState() {
+    if (!syncCodeReady) return;
+    setSyncStatus("Loading sync code...");
+    try {
+      const cloud = await loadSyncCodeState(syncCode);
+      if (cloud.state) {
+        const mergedState = mergeSyncStates(cloud.state, readLocalSyncState());
+        setWorkouts(mergedState.workouts);
+        setActiveWorkout(mergedState.activeWorkout);
+        setRecoveryEntries(mergedState.recoveryEntries);
+        const syncedAt = await saveSyncCodeState(syncCode, mergedState);
+        setLastCloudSyncAt(syncedAt);
+      }
+      setSyncStatus("Synced with code");
+    } catch (error) {
+      setSyncStatus(error instanceof Error ? error.message : "Sync code load failed");
+    }
+  }
+
+  function disconnectSyncCode() {
+    localStorage.removeItem(SYNC_CODE_STORAGE_KEY);
+    setSyncCodeReady(false);
+    setLastCloudSyncAt(null);
+    setSyncStatus("Local only");
   }
 
   function updateCategory(category: ExerciseCategory) {
@@ -1533,6 +1616,38 @@ export default function Home() {
                 </button>
               </div>
             )}
+
+            {!user && (
+              <div className="mt-3 rounded-2xl border border-emerald-200/15 bg-emerald-200/[0.06] p-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-100">Sync Code</div>
+                <p className="mt-1 text-sm text-zinc-400">Use the same private code on each device. No email link needed.</p>
+                <input
+                  value={syncCode}
+                  onChange={(event) => setSyncCode(event.target.value)}
+                  placeholder="Choose a private sync code"
+                  type="password"
+                  className="mt-3 min-h-12 w-full rounded-2xl border border-white/10 bg-black/40 px-3 text-sm text-zinc-100"
+                />
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <button type="button" onClick={connectSyncCode} className="min-h-12 rounded-2xl bg-emerald-200 px-4 font-semibold text-zinc-950">
+                    {syncCodeReady ? "Reconnect" : "Connect code"}
+                  </button>
+                  <button type="button" onClick={disconnectSyncCode} className="min-h-12 rounded-2xl border border-white/10 bg-white/[0.04] px-4 font-semibold text-zinc-300">
+                    Local only
+                  </button>
+                </div>
+                {syncCodeReady && (
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button type="button" onClick={pushSyncCodeState} className="min-h-12 rounded-2xl border border-emerald-200/20 bg-emerald-200/10 px-4 font-semibold text-emerald-100">
+                      Push code
+                    </button>
+                    <button type="button" onClick={pullSyncCodeState} className="min-h-12 rounded-2xl border border-white/10 bg-white/[0.04] px-4 font-semibold text-zinc-300">
+                      Pull code
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </Section>
 
           <Section title="Storage">
@@ -1886,6 +2001,28 @@ function readLocalSyncState(): CloudSyncState {
     activeWorkout: readStoredActiveWorkout(),
     recoveryEntries: readStoredRecovery() ?? [],
   };
+}
+
+async function loadSyncCodeState(syncCode: string): Promise<CloudSyncLoadResult> {
+  const response = await fetch("/api/sync-code/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ syncCode }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? "Sync code load failed");
+  return payload as CloudSyncLoadResult;
+}
+
+async function saveSyncCodeState(syncCode: string, state: CloudSyncState) {
+  const response = await fetch("/api/sync-code/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ syncCode, state }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? "Sync code save failed");
+  return payload.updatedAt as string;
 }
 
 async function recoverAuthFromUrl(supabase: SupabaseClient) {
